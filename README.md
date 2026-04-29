@@ -101,7 +101,7 @@ Add **both** entries to `~/.claude/settings.json` — the env var and the auto-s
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "bash -c 'source ~/.bashrc 2>/dev/null; pgrep -f llm-privacy-proxy > /dev/null || (cd /path/to/llm-privacy-proxy && nohup bun src/index.ts >> /tmp/llm-proxy.log 2>&1 &)'"
+        "command": "bash -c 'source ~/.bashrc 2>/dev/null; curl -sf http://localhost:4444/health > /dev/null 2>&1 || (cd /path/to/llm-privacy-proxy && nohup bun src/index.ts >> /tmp/llm-proxy.log 2>&1 &)'"
       }]
     }]
   }
