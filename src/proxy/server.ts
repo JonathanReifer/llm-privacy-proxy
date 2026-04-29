@@ -5,6 +5,7 @@ const PORT = parseInt(process.env.LLM_PROXY_PORT ?? "4444", 10);
 const TARGET = (process.env.LLM_PROXY_TARGET ?? "https://api.anthropic.com").replace(/\/$/, "");
 
 const vault = createVault();
+const stats = { requests: 0, tokenized: 0, detokenized: 0, startedAt: new Date().toISOString() };
 
 export function startProxy(): void {
   Bun.serve({
@@ -16,6 +17,12 @@ export function startProxy(): void {
 
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
+
+  if (req.method === "GET" && url.pathname === "/health") {
+    return new Response(JSON.stringify({ status: "ok", target: TARGET, ...stats }), {
+      headers: { "content-type": "application/json" },
+    });
+  }
 
   // Only intercept the messages endpoint — passthrough everything else
   if (req.method === "POST" && url.pathname === "/v1/messages") {
@@ -34,11 +41,15 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
 
   const sessionId = req.headers.get("x-session-id") ?? "unknown";
   const isStreaming = body.stream === true;
+  stats.requests++;
 
   // Tokenize outbound messages
   if (Array.isArray(body.messages)) {
     try {
-      body.messages = await tokenizeMessages(body.messages as never, vault, sessionId);
+      const tokenized = await tokenizeMessages(body.messages as never, vault, sessionId);
+      const changed = JSON.stringify(tokenized) !== JSON.stringify(body.messages);
+      if (changed) stats.tokenized++;
+      body.messages = tokenized;
     } catch (err) {
       process.stderr.write(`[llm-proxy] tokenize error: ${err}\n`);
       // Fail-open: forward original messages rather than dropping the request
@@ -62,10 +73,12 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
   // Non-streaming: detokenize full response body
   try {
     const json = await upstream.json();
+    const before = JSON.stringify(json);
     const detokenized = await detokenizeBody(json, vault);
+    if (JSON.stringify(detokenized) !== before) stats.detokenized++;
     return new Response(JSON.stringify(detokenized), {
       status: upstream.status,
-      headers: { ...Object.fromEntries(responseHeaders(upstream.headers)), "content-type": "application/json" },
+      headers: { ...responseHeaders(upstream.headers), "content-type": "application/json" },
     });
   } catch (err) {
     process.stderr.write(`[llm-proxy] detokenize error: ${err}\n`);
@@ -158,18 +171,22 @@ async function passthrough(req: Request, url: URL): Promise<Response> {
 
 function forwardHeaders(h: Headers): Record<string, string> {
   const out: Record<string, string> = {};
+  // Strip hop-by-hop + accept-encoding: let Bun negotiate compression internally
+  // so we never receive a compressed body we'd need to re-encode for the client
+  const strip = ["host", "connection", "transfer-encoding", "accept-encoding"];
   h.forEach((v, k) => {
-    const lower = k.toLowerCase();
-    // Strip hop-by-hop headers
-    if (!["host", "connection", "transfer-encoding"].includes(lower)) out[k] = v;
+    if (!strip.includes(k.toLowerCase())) out[k] = v;
   });
   return out;
 }
 
 function responseHeaders(h: Headers): Record<string, string> {
   const out: Record<string, string> = {};
+  // Strip hop-by-hop and compression headers — Bun auto-decompresses, so forwarding
+  // content-encoding/content-length would cause the client to double-decompress (ZlibError)
+  const strip = ["transfer-encoding", "connection", "content-encoding", "content-length"];
   h.forEach((v, k) => {
-    if (!["transfer-encoding", "connection"].includes(k.toLowerCase())) out[k] = v;
+    if (!strip.includes(k.toLowerCase())) out[k] = v;
   });
   return out;
 }
