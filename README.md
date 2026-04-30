@@ -1,8 +1,24 @@
 # llm-privacy-proxy
 
-Transparent PII and secret tokenization proxy for the Anthropic API. Sits between Claude Code (or any LLM client) and `api.anthropic.com` — tokenizing secrets and PII in outbound requests and detokenizing tokens in responses — so the user sees real data and the LLM provider never does.
+**Inline transparent bidirectional tokenization proxy for the Anthropic API.** Sits between Claude Code (or any LLM client) and `api.anthropic.com` — automatically tokenizing secrets and PII in outbound requests and detokenizing tokens in responses — so the user sees real data and the LLM provider never does.
 
-Works with both **API key** and **OAuth / Claude MAX subscription** auth.
+The core power is **bidirectional transparency**: your client sends real data, the LLM sees tokens, and the LLM's response is automatically de-tokenized before it reaches you — all without any changes to client code, prompts, or workflow. You can also use it for simple outbound blocking (strip secrets before they leave), but the full value is the round-trip: the LLM can reference and reason about tokenized values, and you still see the originals in every response.
+
+Works with both **API key** and **OAuth / Claude MAX subscription** auth. No client changes needed — just point `ANTHROPIC_BASE_URL` at the proxy.
+
+## Why Bidirectional Tokenization?
+
+Most privacy approaches either **block** (refuse to send sensitive data) or **redact** (strip it out). Both break LLM usefulness — the model can't help you if it can't see context.
+
+Bidirectional tokenization gives you the best of both worlds:
+
+- **LLM never sees real PII or secrets** — only opaque tokens like `tok_xAbCdEfGhIjK`
+- **LLM can still reason about them** — it can reference, compare, and respond using tokens
+- **You see real data in every response** — the proxy detokenizes on the way back, automatically
+- **Zero workflow changes** — no prompts to modify, no client code to update, no blocking that breaks tasks
+- **Works for any LLM client** — not just Claude Code; any HTTP client pointing at the proxy
+
+This makes it ideal for agentic workflows where the LLM needs to handle API keys, credentials, emails, or other sensitive context without exfiltrating it to the provider.
 
 ## How It Works
 
