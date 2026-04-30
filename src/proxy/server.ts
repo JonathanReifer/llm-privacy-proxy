@@ -24,6 +24,29 @@ async function handleRequest(req: Request): Promise<Response> {
     });
   }
 
+  if (req.method === "GET" && url.pathname === "/vault") {
+    const limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
+    const entries = await vault.list(limit);
+    return new Response(JSON.stringify(entries, null, 2), {
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (req.method === "GET" && url.pathname === "/vault/stats") {
+    return new Response(JSON.stringify(await vault.stats(), null, 2), {
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (req.method === "GET" && url.pathname === "/vault/search") {
+    const q = url.searchParams.get("q") ?? "";
+    if (!q) return new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } });
+    const results = await vault.search(q);
+    return new Response(JSON.stringify(results, null, 2), {
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   // Only intercept the messages endpoint — passthrough everything else
   if (req.method === "POST" && url.pathname === "/v1/messages") {
     return handleMessages(req, url);

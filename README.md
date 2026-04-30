@@ -128,6 +128,65 @@ Add **both** entries to `~/.claude/settings.json` — the env var and the auto-s
 
 Restart Claude Code. All API calls now flow through the proxy transparently — including OAuth/Claude MAX sessions.
 
+## Inspecting the Vault
+
+The proxy exposes live vault inspection endpoints — all data is decrypted in-memory and returned as JSON. These are only available on localhost.
+
+### Recent tokenized values
+
+```bash
+curl -s http://localhost:4444/vault | jq
+```
+
+Returns the 50 most recent entries (newest first):
+
+```json
+[
+  {
+    "token": "tok_xAbCdEfGhIjK",
+    "original": "sk-ant-api03-...",
+    "type": "api_key_anthropic",
+    "createdAt": "2026-04-30T01:22:11.000Z",
+    "sessionId": "abc123"
+  },
+  ...
+]
+```
+
+Increase the limit with `?limit=N` (use `0` for all entries):
+
+```bash
+curl -s "http://localhost:4444/vault?limit=200" | jq
+```
+
+### Counts by pattern type
+
+```bash
+curl -s http://localhost:4444/vault/stats | jq
+```
+
+```json
+{
+  "api_key_anthropic": 3,
+  "pii_email": 7,
+  "api_key_github": 1
+}
+```
+
+### Search by token or original value
+
+```bash
+# Find all entries containing a fragment of the original value
+curl -s "http://localhost:4444/vault/search?q=sk-ant" | jq
+
+# Or look up a specific token
+curl -s "http://localhost:4444/vault/search?q=tok_xAbCdEfGhIjK" | jq
+```
+
+### Vault file
+
+The vault is stored encrypted (AES-256-GCM) at `~/.llm-privacy/vault.enc.json`. You cannot read it directly — use the endpoints above or the `LLM_PRIVACY_VAULT_KEY` env var to decrypt it programmatically via the `FileVault` class in `src/vault.ts`.
+
 ## Running Tests
 
 ```bash
