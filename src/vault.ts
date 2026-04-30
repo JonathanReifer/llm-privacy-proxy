@@ -37,12 +37,13 @@ async function decrypt(env: Envelope): Promise<VaultData> {
 }
 
 export class FileVault implements IVault {
-  private readonly path: string;
+  readonly mode = "file" as const;
+  readonly path: string;
   private readonly tmp: string;
 
   constructor(vaultPath?: string) {
     this.path = vaultPath ?? join(process.env.HOME ?? "~", ".llm-privacy", "vault.enc.json");
-    this.tmp = this.path + ".tmp";
+    this.tmp = this.path + ".tmp";  // atomic write via rename
     mkdirSync(dirname(this.path), { recursive: true });
   }
 
@@ -74,6 +75,8 @@ export class FileVault implements IVault {
 }
 
 export class MemoryVault implements IVault {
+  readonly mode = "memory" as const;
+  readonly path = null;
   private store = new Map<string, VaultEntry>();
   async get(t: string) { return this.store.get(t) ?? null; }
   async put(e: VaultEntry) { this.store.set(e.token, e); }

@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
+    "review": "bun src/cli/review.ts",
     "test": "bun test"
   },
   "devDependencies": {

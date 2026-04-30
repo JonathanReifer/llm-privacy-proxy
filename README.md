@@ -128,6 +128,24 @@ Add **both** entries to `~/.claude/settings.json` — the env var and the auto-s
 
 Restart Claude Code. All API calls now flow through the proxy transparently — including OAuth/Claude MAX sessions.
 
+## Vault Persistence
+
+The vault is encrypted with AES-256-GCM and persists to disk at `~/.llm-privacy/vault.enc.json`. Every token mapping survives proxy restarts — the LLM can reference a token from a previous session and the proxy will still detokenize it correctly.
+
+**The proxy will refuse to start without `LLM_PRIVACY_VAULT_KEY`.** This is intentional: without the key, the vault would silently fall back to in-memory-only storage and all token mappings would be lost on restart, breaking detokenization across sessions.
+
+Verify that persistence is active on a running proxy:
+
+```bash
+curl -s http://localhost:4444/health | jq '{vaultMode, vaultPath}'
+# {
+#   "vaultMode": "file",
+#   "vaultPath": "/home/you/.llm-privacy/vault.enc.json"
+# }
+```
+
+If you see `"vaultMode": "memory"`, the proxy started without the key — stop it, run `source ~/.bashrc`, and restart.
+
 ## Inspecting the Vault
 
 The proxy exposes live vault inspection endpoints — all data is decrypted in-memory and returned as JSON. These are only available on localhost.

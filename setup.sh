@@ -69,6 +69,8 @@ if ask_yes "Install proxy into ~/.claude/llm-privacy-proxy? (recommended — kee
   cp "$SCRIPT_DIR/package.json" "$INSTALL_DEST/"
   cp "$SCRIPT_DIR/tsconfig.json" "$INSTALL_DEST/" 2>/dev/null || true
   [ -f "$SCRIPT_DIR/bun.lock" ] && cp "$SCRIPT_DIR/bun.lock" "$INSTALL_DEST/"
+  cp "$SCRIPT_DIR/start-proxy.sh" "$INSTALL_DEST/"
+  chmod +x "$INSTALL_DEST/start-proxy.sh"
   echo "  + Installing dependencies..."
   (cd "$INSTALL_DEST" && bun install --silent)
   INSTALL_PATH="$INSTALL_DEST"
@@ -91,7 +93,7 @@ if [ ! -f "$CLAUDE_SETTINGS" ]; then
   echo "    env.ANTHROPIC_BASE_URL = \"${PROXY_URL}\""
   echo "    SessionStart hook: curl -sf ${PROXY_URL}/health || (cd ${INSTALL_PATH} && nohup bun src/index.ts >> /tmp/llm-proxy.log 2>&1 &)"
 else
-  HOOK_CMD="bash -c 'source ~/.bashrc 2>/dev/null; curl -sf ${PROXY_URL}/health > /dev/null 2>&1 || (cd ${INSTALL_PATH} && nohup bun src/index.ts >> /tmp/llm-proxy.log 2>&1 &)'"
+  HOOK_CMD="bash -c 'curl -sf ${PROXY_URL}/health > /dev/null 2>&1 || nohup ${INSTALL_PATH}/start-proxy.sh >> /tmp/llm-proxy.log 2>&1 &'"
 
   python3 - "$CLAUDE_SETTINGS" "$PROXY_URL" "$HOOK_CMD" <<'PYEOF'
 import sys, json, os

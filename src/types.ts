@@ -48,6 +48,8 @@ export interface VaultData {
 }
 
 export interface IVault {
+  readonly mode: "file" | "memory";
+  readonly path: string | null;
   get(token: string): Promise<VaultEntry | null>;
   put(entry: VaultEntry): Promise<void>;
   list(limit?: number): Promise<VaultEntry[]>;

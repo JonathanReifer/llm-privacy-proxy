@@ -19,9 +19,13 @@ async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
   if (req.method === "GET" && url.pathname === "/health") {
-    return new Response(JSON.stringify({ status: "ok", target: TARGET, ...stats }), {
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(JSON.stringify({
+      status: "ok",
+      target: TARGET,
+      vaultMode: vault.mode,
+      vaultPath: vault.path,
+      ...stats,
+    }), { headers: { "content-type": "application/json" } });
   }
 
   if (req.method === "GET" && url.pathname === "/vault") {
