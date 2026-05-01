@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-01
+
+### Added
+
+- **5 new detection patterns**: `ssh_private_key` (RSA/EC/DSA/OPENSSH/PKCS#8 PEM blocks), `tls_private_key` (encrypted PKCS#8 + PGP private key blocks), `api_key_jwt` (JWT tokens — `eyJ` header prefix), `api_key_npm` (`npm_` access tokens), `db_connection_string` (database URIs with embedded `user:password@host` credentials)
+- **26 new tests** covering all new patterns, all fixed patterns, and 13 previously untested existing patterns (total: 83 tests, up from 57)
+
+### Fixed
+
+- **`api_key_openai`**: regex now matches `sk-proj-` and `sk-svcacct-` formats (new OpenAI project and service account key prefixes) in addition to the classic `sk-` format
+- **`api_key_github`**: regex now matches all GitHub token types — `ghp_` (classic PAT), `gho_` (OAuth), `ghs_` (server-to-server), `ghu_` (user-to-server), and `github_pat_` (fine-grained PAT) — previously only `ghp_` was covered
+
+### Changed
+
+- Test count updated in CLAUDE.md to reflect 83 tests
+
 ## [0.2.0] - 2026-05-01
 
 ### Added

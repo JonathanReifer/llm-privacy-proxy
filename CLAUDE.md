@@ -36,7 +36,7 @@ curl -s http://localhost:4444/health | jq .version
 ## Testing
 
 ```bash
-bun test                    # unit + integration (57 tests)
+bun test                    # unit + integration (83 tests)
 bun test --watch            # re-run on change
 ```
 

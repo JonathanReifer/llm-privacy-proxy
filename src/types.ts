@@ -17,7 +17,12 @@ export type PatternType =
   | "pii_credit_card"
   | "pii_ipv4"
   | "pii_passport_us"
-  | "pii_dob";
+  | "pii_dob"
+  | "ssh_private_key"
+  | "tls_private_key"
+  | "api_key_jwt"
+  | "api_key_npm"
+  | "db_connection_string";
 
 export type Severity = "block" | "warn";
 

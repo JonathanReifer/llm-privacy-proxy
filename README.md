@@ -156,17 +156,22 @@ All patterns apply silently — no prompts, no blocks. The user types freely; th
 | Pattern | Severity | Example match |
 |---|---|---|
 | `api_key_anthropic` | block | `sk-ant-api03-...` |
-| `api_key_openai` | block | `sk-proj-...` |
+| `api_key_openai` | block | `sk-proj-...` / `sk-svcacct-...` / `sk-...` |
 | `api_key_xai` | block | `xai-...` |
 | `api_key_aws_access` | block | `AKIAIOSFODNN7EXAMPLE` |
 | `api_key_aws_secret` | block | `aws_secret_key = ...` (key=value) |
-| `api_key_github` | block | `ghp_...` |
+| `api_key_github` | block | `ghp_` / `gho_` / `ghs_` / `ghu_` / `github_pat_` |
 | `api_key_google` | block | `AIza...` |
 | `api_key_slack` | block | `xoxb-...` / `xoxp-...` |
 | `api_key_stripe` | block | `sk_live_...` / `sk_test_...` |
 | `api_key_twilio` | block | `SK` + 32 hex chars |
 | `api_key_sendgrid` | block | `SG.xxx.xxx` |
+| `api_key_jwt` | block | `eyJ...` (JSON Web Token) |
+| `api_key_npm` | block | `npm_...` (npm access token) |
 | `api_key_generic` | block | `api_key = ...` / `password = ...` (key=value) |
+| `ssh_private_key` | block | `-----BEGIN RSA/EC/DSA/OPENSSH/PRIVATE KEY-----` |
+| `tls_private_key` | block | `-----BEGIN ENCRYPTED PRIVATE KEY-----` / PGP |
+| `db_connection_string` | block | `postgres://user:pass@host/db` |
 | `pii_email` | warn | `user@example.com` |
 | `pii_phone_us` | warn | `(555) 123-4567` |
 | `pii_ssn_us` | block | `123-45-6789` |
@@ -176,6 +181,8 @@ All patterns apply silently — no prompts, no blocks. The user types freely; th
 | `pii_dob` | warn | `01/15/1990` |
 
 **Severity:** `block` = secrets that must never reach the provider. `warn` = PII worth tokenizing but less critical. Both are tokenized identically — severity is metadata for future filtering.
+
+**Known high false-positive patterns:** `pii_ipv4` (matches all IP addresses including RFC1918), `pii_passport_us` (broad pattern hits some version strings), `pii_dob` (matches any MM/DD/YYYY date). Disable with `LLM_PRIVACY_DISABLE_PATTERNS=pii_ipv4,pii_passport_us,pii_dob` if they cause noise.
 
 Disable specific patterns: `LLM_PRIVACY_DISABLE_PATTERNS=pii_email,pii_phone_us`
 
