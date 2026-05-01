@@ -99,6 +99,7 @@ cmd_status() {
       echo "$health" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
+print(f\"  Version:  {d.get('version','?')}\")
 print(f\"  Target:   {d.get('target','?')}\")
 print(f\"  Vault:    {d.get('vaultMode','?')}  ({d.get('vaultPath','?')})\")
 print(f\"  Traffic:  {d.get('requests',0)} requests  {d.get('tokenized',0)} tokenized  {d.get('detokenized',0)} detokenized\")

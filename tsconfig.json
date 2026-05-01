@@ -4,7 +4,8 @@
     "module": "Bundler",
     "moduleResolution": "Bundler",
     "strict": true,
-    "lib": ["ES2022"]
+    "lib": ["ES2022"],
+    "resolveJsonModule": true
   },
   "include": ["src/**/*", "tests/**/*"]
 }

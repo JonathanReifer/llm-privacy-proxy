@@ -1,6 +1,7 @@
 import { SqliteVault, createVault } from "../vault.js";
 import { tokenizeMessages, detokenizeBody, StreamDetokenizer } from "./transform.js";
 import { PromptLogger } from "./logger.js";
+import pkg from "../../package.json";
 
 const PORT = parseInt(process.env.LLM_PROXY_PORT ?? "4444", 10);
 const TARGET = (process.env.LLM_PROXY_TARGET ?? "https://api.anthropic.com").replace(/\/$/, "");
@@ -56,6 +57,7 @@ async function handleRequest(req: Request): Promise<Response> {
   if (req.method === "GET" && url.pathname === "/health") {
     return new Response(JSON.stringify({
       status: "ok",
+      version: pkg.version,
       target: TARGET,
       vaultMode: vault.mode,
       vaultPath: vault.path,

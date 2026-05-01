@@ -45,7 +45,7 @@ Streaming responses are handled with a sliding-buffer detokenizer that correctly
 ```mermaid
 flowchart TD
     CC["Claude Code\nANTHROPIC_BASE_URL=localhost:4444\n(API key or OAuth/MAX)"]
-    SS["SessionStart hook\nauto-starts proxy if not running"]
+    SS["SessionStart hook\nauto-starts proxy via proxy.sh"]
 
     SS -.->|ensures running| SRV
 
@@ -93,20 +93,26 @@ source ~/.bashrc
 ### 3. Start the proxy
 
 ```bash
-bun start
-# [llm-proxy] listening on http://localhost:4444 → https://api.anthropic.com
+./proxy.sh start
+#   ✓ Proxy started (PID 12345) → http://localhost:4444
 ```
 
 Verify it's running:
 
 ```bash
-curl http://localhost:4444/health
-# {"status":"ok","target":"https://api.anthropic.com","requests":0,"tokenized":0,"detokenized":0,...}
+./proxy.sh status
+#   Status:   running (PID 12345)
+#   Version:  0.2.0
+#   URL:      http://localhost:4444
+#   Target:   https://api.anthropic.com
+#   Vault:    sqlite  (~/.llm-privacy/vault.db)
+#   Traffic:  0 requests  0 tokenized  0 detokenized
+#   Since:    2026-05-01T12:00:00.000Z
 ```
 
 ### 4. Point Claude Code at the proxy
 
-Add **both** entries to `~/.claude/settings.json` — the env var and the auto-start hook together, so the proxy is always running before any session uses it:
+Add **both** entries to `~/.claude/settings.json` — the env var routes traffic through the proxy, and the SessionStart hook ensures it's always running before any session uses it:
 
 ```json
 {
@@ -117,24 +123,69 @@ Add **both** entries to `~/.claude/settings.json` — the env var and the auto-s
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "bash -c 'source ~/.bashrc 2>/dev/null; curl -sf http://localhost:4444/health > /dev/null 2>&1 || (cd /path/to/llm-privacy-proxy && nohup bun src/index.ts >> /tmp/llm-proxy.log 2>&1 &)'"
+        "command": "bash -c 'source ~/.bashrc 2>/dev/null; /path/to/llm-privacy-proxy/proxy.sh start'"
       }]
     }]
   }
 }
 ```
 
-> **Never** add `ANTHROPIC_BASE_URL` without the auto-start hook in place. If the proxy isn't running when a session starts, all Claude Code sessions will fail to connect.
+> **Never** add `ANTHROPIC_BASE_URL` without the SessionStart hook in place. If the proxy isn't running when a session starts, all Claude Code sessions will fail to connect.
 
 Restart Claude Code. All API calls now flow through the proxy transparently — including OAuth/Claude MAX sessions.
+
+## Managing the Proxy
+
+All lifecycle operations go through `proxy.sh`:
+
+| Command | Description |
+|---|---|
+| `./proxy.sh start` | Start the proxy daemon (no-op if already running) |
+| `./proxy.sh stop` | Gracefully stop via SIGTERM, SIGKILL after 10s timeout |
+| `./proxy.sh restart` | Stop then start |
+| `./proxy.sh status` | Show running status, version, vault mode, traffic counters |
+
+The proxy writes logs to `/tmp/llm-proxy.log` and stores its PID in `/tmp/llm-proxy.pid`.
+
+Stats (request counts, tokenized/detokenized) persist to the SQLite vault on SIGTERM and every 60 seconds, so counters survive restarts.
+
+## What Gets Tokenized
+
+All patterns apply silently — no prompts, no blocks. The user types freely; the LLM sees only tokens.
+
+| Pattern | Severity | Example match |
+|---|---|---|
+| `api_key_anthropic` | block | `sk-ant-api03-...` |
+| `api_key_openai` | block | `sk-proj-...` |
+| `api_key_xai` | block | `xai-...` |
+| `api_key_aws_access` | block | `AKIAIOSFODNN7EXAMPLE` |
+| `api_key_aws_secret` | block | `aws_secret_key = ...` (key=value) |
+| `api_key_github` | block | `ghp_...` |
+| `api_key_google` | block | `AIza...` |
+| `api_key_slack` | block | `xoxb-...` / `xoxp-...` |
+| `api_key_stripe` | block | `sk_live_...` / `sk_test_...` |
+| `api_key_twilio` | block | `SK` + 32 hex chars |
+| `api_key_sendgrid` | block | `SG.xxx.xxx` |
+| `api_key_generic` | block | `api_key = ...` / `password = ...` (key=value) |
+| `pii_email` | warn | `user@example.com` |
+| `pii_phone_us` | warn | `(555) 123-4567` |
+| `pii_ssn_us` | block | `123-45-6789` |
+| `pii_credit_card` | block | `4111 1111 1111 1111` |
+| `pii_ipv4` | warn | `192.168.1.1` |
+| `pii_passport_us` | block | `A1234567` |
+| `pii_dob` | warn | `01/15/1990` |
+
+**Severity:** `block` = secrets that must never reach the provider. `warn` = PII worth tokenizing but less critical. Both are tokenized identically — severity is metadata for future filtering.
+
+Disable specific patterns: `LLM_PRIVACY_DISABLE_PATTERNS=pii_email,pii_phone_us`
 
 ## Vault Persistence
 
 The vault is a SQLite database (`~/.llm-privacy/vault.db`) with each original value encrypted individually using AES-256-GCM. Every token mapping survives proxy restarts — the LLM can reference a token from a previous session and the proxy will still detokenize it correctly.
 
-SQLite WAL (write-ahead log) mode is enabled, which allows unlimited concurrent readers and serializes writers without blocking — safe for any number of simultaneous Claude Code sessions.
+SQLite WAL mode is enabled, which allows unlimited concurrent readers and serializes writers without blocking — safe for any number of simultaneous Claude Code sessions.
 
-**The proxy will refuse to start without `LLM_PRIVACY_VAULT_KEY`.** This is intentional: without the key, the vault would silently fall back to in-memory-only storage and all token mappings would be lost on restart, breaking detokenization across sessions.
+**The proxy will refuse to start without `LLM_PRIVACY_VAULT_KEY`.** This is intentional: without the key, the vault falls back to in-memory-only storage and all token mappings are lost on restart, breaking detokenization across sessions.
 
 Verify that persistence is active on a running proxy:
 
@@ -148,6 +199,19 @@ curl -s http://localhost:4444/health | jq '{vaultMode, vaultPath}'
 
 If you see `"vaultMode": "memory"`, the proxy started without the key — stop it, run `source ~/.bashrc`, and restart.
 
+## Session-Scoped Tokenization
+
+Pass `x-session-id` in your request headers to scope token storage to a specific session. The session ID is stored alongside each vault entry and surfaced in the review CLI — useful for tracing which session first introduced a given token.
+
+```bash
+curl http://localhost:4444/v1/messages \
+  -H "x-session-id: my-session-abc123" \
+  -H "content-type: application/json" \
+  ...
+```
+
+Claude Code automatically supplies a session ID via its normal headers; most clients don't need to set this manually.
+
 ## Prompt Logging
 
 The proxy can log all prompt content to a JSONL file for auditing.
@@ -155,7 +219,7 @@ The proxy can log all prompt content to a JSONL file for auditing.
 **Modes** (set via `LLM_PRIVACY_LOG_PROMPTS`):
 - `none` (default) — no logging
 - `tokenized` — log the tokenized version of each request (secrets replaced with tokens)
-- `full` — log both original and tokenized versions (stores raw secrets on disk)
+- `full` — log both original and tokenized versions (**stores raw secrets on disk** — use with care)
 
 Log format (one JSON object per line):
 
@@ -164,10 +228,12 @@ Log format (one JSON object per line):
   "ts": "2026-05-01T00:00:00.000Z",
   "sessionId": "abc123",
   "matchCount": 2,
-  "tokenized": ["[\"user\",\"my key is tok_xxx...\"]"],
-  "original": ["[\"user\",\"my key is sk-...\"]"]
+  "tokenized": ["\"my key is tok_xAbCdEfGhIjK\""],
+  "original": ["\"my key is sk-ant-...\""]
 }
 ```
+
+(`original` field only present when `LLM_PRIVACY_LOG_PROMPTS=full`)
 
 Log file path: `~/.llm-privacy/prompts.jsonl` (override with `LLM_PRIVACY_LOG_PATH`).
 
@@ -181,7 +247,7 @@ The proxy exposes live vault inspection endpoints — all data is decrypted in-m
 curl -s http://localhost:4444/vault | jq
 ```
 
-Returns the 50 most recent entries (newest first):
+Returns the 50 most recent entries (newest first). Use `?limit=N` (`0` = unlimited):
 
 ```json
 [
@@ -190,16 +256,11 @@ Returns the 50 most recent entries (newest first):
     "original": "sk-ant-api03-...",
     "type": "api_key_anthropic",
     "createdAt": "2026-04-30T01:22:11.000Z",
-    "sessionId": "abc123"
-  },
-  ...
+    "sessionId": "abc123",
+    "refCount": 3,
+    "lastAccessedAt": "2026-05-01T09:00:00.000Z"
+  }
 ]
-```
-
-Increase the limit with `?limit=N` (use `0` for all entries):
-
-```bash
-curl -s "http://localhost:4444/vault?limit=200" | jq
 ```
 
 ### Most-accessed entries (hot tokens)
@@ -208,20 +269,13 @@ curl -s "http://localhost:4444/vault?limit=200" | jq
 curl -s "http://localhost:4444/vault/hot?limit=20" | jq
 ```
 
-Returns the top N entries ordered by access frequency (`refCount` DESC). Default limit is 20.
+Returns entries ordered by access frequency (`refCount` DESC). Default limit is 20.
 
 ### Counts by pattern type
 
 ```bash
 curl -s http://localhost:4444/vault/stats | jq
-```
-
-```json
-{
-  "api_key_anthropic": 3,
-  "pii_email": 7,
-  "api_key_github": 1
-}
+# {"api_key_anthropic": 3, "pii_email": 7, "api_key_github": 1}
 ```
 
 ### Search by token or original value
@@ -234,9 +288,30 @@ curl -s "http://localhost:4444/vault/search?q=sk-ant" | jq
 curl -s "http://localhost:4444/vault/search?q=tok_xAbCdEfGhIjK" | jq
 ```
 
-### Vault file
+## CLI Review Tool
 
-The vault is a SQLite database at `~/.llm-privacy/vault.db`. Individual entries are encrypted with AES-256-GCM — you cannot read originals without `LLM_PRIVACY_VAULT_KEY`. Use the endpoints above or the `SqliteVault` class in `src/vault.ts` to access entries programmatically.
+The `bun run review` CLI provides offline vault inspection without a running proxy.
+
+```bash
+# List recent entries (default 50)
+bun run review list
+bun run review list --limit 100
+
+# Search by token prefix or original value fragment
+bun run review search alice@example.com
+bun run review search tok_xAb
+
+# Vault statistics (entry counts by type, file size)
+bun run review stats
+
+# Export all entries
+bun run review export          # JSON array
+bun run review export --csv    # CSV with header row
+```
+
+Output columns: `Token`, `Type`, `Created`, `Refs` (access count), `Original`.
+
+The CLI reads `LLM_PRIVACY_VAULT_PATH` (defaults to `~/.llm-privacy/vault.db`) and requires `LLM_PRIVACY_VAULT_KEY` to decrypt originals.
 
 ## Running Tests
 
@@ -244,11 +319,11 @@ The vault is a SQLite database at `~/.llm-privacy/vault.db`. Individual entries 
 bun test
 ```
 
-End-to-end test (requires `source ~/.bashrc` first to load keys):
+End-to-end smoke test (requires `source ~/.bashrc` first to load keys):
 
 ```bash
 # Start proxy
-bun start &
+./proxy.sh start
 
 # Verify health
 curl http://localhost:4444/health
@@ -261,44 +336,12 @@ curl http://localhost:4444/v1/messages \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":10,"messages":[{"role":"user","content":"Reply: PROXY_OK"}]}'
 ```
 
-## What Gets Tokenized
-
-All patterns apply silently — no prompts, no blocks. The user types freely; the LLM sees only tokens.
-
-| Pattern | Example |
-|---|---|
-| `api_key_anthropic` | `sk-ant-api03-...` → `tok_aBcDeFgHiJkL` |
-| `api_key_openai` | `sk-proj-...` → `tok_xYzAbCdEfGh` |
-| `api_key_aws_access` | `AKIAIOSFODNN7EXAMPLE` → `tok_...` |
-| `api_key_github` | `ghp_...` → `tok_...` |
-| `api_key_xai` | `xai-...` → `tok_...` |
-| `pii_email` | `user@example.com` → `tok_...` |
-| `pii_phone_us` | `(555) 123-4567` → `tok_...` |
-| `pii_ssn_us` | `123-45-6789` → `tok_...` |
-| `pii_credit_card` | `4111 1111 1111 1111` → `tok_...` |
-
-**Additional patterns also detected:**
-
-| Pattern | Severity | Description |
-|---|---|---|
-| `api_key_google` | block | Google API key (`AIza...`) |
-| `api_key_slack` | block | Slack token (`xox[baprs]-...`) |
-| `api_key_stripe` | block | Stripe key (`sk_live_`, `sk_test_`, etc.) |
-| `api_key_twilio` | block | Twilio API key (`SK` + 32 hex chars) |
-| `api_key_sendgrid` | block | SendGrid API key (`SG.xxx.xxx`) |
-| `api_key_aws_secret` | block | AWS Secret Access Key (key=value pattern) |
-| `pii_ipv4` | warn | IPv4 address |
-| `pii_passport_us` | warn | US passport number |
-| `pii_dob` | warn | Date of birth (MM/DD/YYYY or MM-DD-YYYY) |
-
-Disable specific patterns: `LLM_PRIVACY_DISABLE_PATTERNS=pii_email,pii_phone_us`
-
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LLM_PRIVACY_HMAC_KEY` | Yes | — | 32-byte base64 HMAC key — **never regenerate** |
-| `LLM_PRIVACY_VAULT_KEY` | Yes | — | 32-byte base64 AES-256-GCM vault encryption key |
+| `LLM_PRIVACY_HMAC_KEY` | Yes | — | 32-byte base64url HMAC key — **never regenerate** |
+| `LLM_PRIVACY_VAULT_KEY` | Yes | — | 32-byte base64url AES-256-GCM vault encryption key |
 | `LLM_PROXY_PORT` | No | `4444` | Port the proxy listens on |
 | `LLM_PROXY_TARGET` | No | `https://api.anthropic.com` | Upstream API base URL |
 | `LLM_PRIVACY_VAULT_PATH` | No | `~/.llm-privacy/vault.db` | Custom SQLite database path |
