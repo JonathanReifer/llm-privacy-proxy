@@ -69,8 +69,9 @@ if ask_yes "Install proxy into ~/.claude/llm-privacy-proxy? (recommended — kee
   cp "$SCRIPT_DIR/package.json" "$INSTALL_DEST/"
   cp "$SCRIPT_DIR/tsconfig.json" "$INSTALL_DEST/" 2>/dev/null || true
   [ -f "$SCRIPT_DIR/bun.lock" ] && cp "$SCRIPT_DIR/bun.lock" "$INSTALL_DEST/"
+  cp "$SCRIPT_DIR/proxy.sh" "$INSTALL_DEST/"
   cp "$SCRIPT_DIR/start-proxy.sh" "$INSTALL_DEST/"
-  chmod +x "$INSTALL_DEST/start-proxy.sh"
+  chmod +x "$INSTALL_DEST/proxy.sh" "$INSTALL_DEST/start-proxy.sh"
   echo "  + Installing dependencies..."
   (cd "$INSTALL_DEST" && bun install --silent)
   INSTALL_PATH="$INSTALL_DEST"
@@ -124,9 +125,9 @@ if [ ! -f "$CLAUDE_SETTINGS" ]; then
   echo "  ! ~/.claude/settings.json not found — skipping Claude Code integration"
   echo "    Run this script again after installing Claude Code, or add manually:"
   echo "    env.ANTHROPIC_BASE_URL = \"${PROXY_URL}\""
-  echo "    SessionStart hook: curl -sf ${PROXY_URL}/health || (cd ${INSTALL_PATH} && nohup bun src/index.ts >> /tmp/llm-proxy.log 2>&1 &)"
+  echo "    SessionStart hook: ${INSTALL_PATH}/proxy.sh start"
 else
-  HOOK_CMD="bash -c 'curl -sf ${PROXY_URL}/health > /dev/null 2>&1 || nohup ${INSTALL_PATH}/start-proxy.sh >> /tmp/llm-proxy.log 2>&1 &'"
+  HOOK_CMD="${INSTALL_PATH}/proxy.sh start"
 
   python3 - "$CLAUDE_SETTINGS" "$PROXY_URL" "$HOOK_CMD" <<'PYEOF'
 import sys, json, os
@@ -192,8 +193,8 @@ echo "  source ~/.bashrc"
 echo ""
 echo "Verify the proxy starts correctly:"
 echo ""
-echo "  cd ${INSTALL_PATH} && bun start"
-echo "  curl ${PROXY_URL}/health"
+echo "  ${INSTALL_PATH}/proxy.sh start"
+echo "  ${INSTALL_PATH}/proxy.sh status"
 echo ""
 if [ -f "$CLAUDE_SETTINGS" ]; then
   echo "Claude Code is already configured. Restart Claude Code to pick up changes."
