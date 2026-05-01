@@ -11,6 +11,13 @@ export function startProxy(): void {
   Bun.serve({
     port: PORT,
     fetch: handleRequest,
+    error(err) {
+      process.stderr.write(`[llm-proxy] unhandled server error: ${err}\n`);
+      return new Response(JSON.stringify({ error: "internal proxy error" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    },
   });
   console.log(`[llm-proxy] listening on http://localhost:${PORT} → ${TARGET}`);
 }
@@ -83,13 +90,22 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
     }
   }
 
-  const upstream = await fetch(`${TARGET}${url.pathname}`, {
-    method: "POST",
-    headers: forwardHeaders(req.headers),
-    body: JSON.stringify(body),
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${TARGET}${url.pathname}`, {
+      method: "POST",
+      headers: forwardHeaders(req.headers),
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    process.stderr.write(`[llm-proxy] upstream fetch error: ${err}\n`);
+    return new Response(JSON.stringify({ error: "upstream unavailable" }), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
+  }
 
-  if (!upstream.ok && !isStreaming) {
+  if (!upstream.ok) {
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders(upstream.headers) });
   }
 
