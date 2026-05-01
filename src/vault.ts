@@ -99,10 +99,10 @@ export class SqliteVault implements IVault {
       last_accessed_at TEXT
     )`);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_created_at ON entries(created_at DESC)");
-    this.db.run("CREATE INDEX IF NOT EXISTS idx_ref_count ON entries(ref_count DESC)");
-    // Add columns to existing DBs that pre-date these fields
+    // Migrate existing DBs that pre-date these columns before creating the index that depends on ref_count
     try { this.db.run("ALTER TABLE entries ADD COLUMN ref_count INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
     try { this.db.run("ALTER TABLE entries ADD COLUMN last_accessed_at TEXT"); } catch { /* already exists */ }
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_ref_count ON entries(ref_count DESC)");
     this.db.run(`CREATE TABLE IF NOT EXISTS proxy_stats (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
