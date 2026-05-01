@@ -26,7 +26,7 @@ This makes it ideal for agentic workflows where the LLM needs to handle API keys
 sequenceDiagram
     participant U as User / Claude Code
     participant P as llm-privacy-proxy<br/>(localhost:4444)
-    participant V as Encrypted Vault<br/>(~/.llm-privacy/vault.enc.json)
+    participant V as Encrypted Vault<br/>(~/.llm-privacy/vault.db)
     participant A as api.anthropic.com
 
     U->>P: POST /v1/messages<br/>{"content": "my key is sk-ant-..."}
@@ -57,16 +57,16 @@ flowchart TD
         SRV -->|passthrough| PT["all other paths"]
         SRV -->|GET /health| HL["stats: requests\ntokenized / detokenized"]
         TK --> SC["core.ts\nHMAC-SHA256 makeToken\nregex scan"]
-        SC -->|matches| VW["vault.ts\nFileVault.put"]
+        SC -->|matches| VW["vault.ts\nSqliteVault.put"]
         SRV -->|non-stream response| DTK["transform.ts\ndetokenizeBody"]
         SRV -->|stream response| SDT["transform.ts\nStreamDetokenizer\n(sliding buffer)"]
-        DTK --> VR["vault.ts\nFileVault.get"]
+        DTK --> VR["vault.ts\nSqliteVault.get"]
         SDT --> VR
     end
 
     SRV -->|tokenized request| ANT["api.anthropic.com"]
     ANT -->|raw response| SRV
-    VW --> ENC[("vault.enc.json\nAES-256-GCM")]
+    VW --> ENC[("vault.db\nSQLite WAL\n+ AES-256-GCM")]
     VR --> ENC
 ```
 
@@ -75,7 +75,7 @@ flowchart TD
 ### 1. Clone and install
 
 ```bash
-git clone ssh://git@gitlab.rsolabs.com:223/ai/llm-privacy-proxy.git
+git clone https://github.com/JonathanReifer/llm-privacy-proxy.git
 cd llm-privacy-proxy
 ```
 
@@ -130,7 +130,9 @@ Restart Claude Code. All API calls now flow through the proxy transparently — 
 
 ## Vault Persistence
 
-The vault is encrypted with AES-256-GCM and persists to disk at `~/.llm-privacy/vault.enc.json`. Every token mapping survives proxy restarts — the LLM can reference a token from a previous session and the proxy will still detokenize it correctly.
+The vault is a SQLite database (`~/.llm-privacy/vault.db`) with each original value encrypted individually using AES-256-GCM. Every token mapping survives proxy restarts — the LLM can reference a token from a previous session and the proxy will still detokenize it correctly.
+
+SQLite WAL (write-ahead log) mode is enabled, which allows unlimited concurrent readers and serializes writers without blocking — safe for any number of simultaneous Claude Code sessions.
 
 **The proxy will refuse to start without `LLM_PRIVACY_VAULT_KEY`.** This is intentional: without the key, the vault would silently fall back to in-memory-only storage and all token mappings would be lost on restart, breaking detokenization across sessions.
 
@@ -139,8 +141,8 @@ Verify that persistence is active on a running proxy:
 ```bash
 curl -s http://localhost:4444/health | jq '{vaultMode, vaultPath}'
 # {
-#   "vaultMode": "file",
-#   "vaultPath": "/home/you/.llm-privacy/vault.enc.json"
+#   "vaultMode": "sqlite",
+#   "vaultPath": "/home/you/.llm-privacy/vault.db"
 # }
 ```
 
@@ -203,7 +205,7 @@ curl -s "http://localhost:4444/vault/search?q=tok_xAbCdEfGhIjK" | jq
 
 ### Vault file
 
-The vault is stored encrypted (AES-256-GCM) at `~/.llm-privacy/vault.enc.json`. You cannot read it directly — use the endpoints above or the `LLM_PRIVACY_VAULT_KEY` env var to decrypt it programmatically via the `FileVault` class in `src/vault.ts`.
+The vault is a SQLite database at `~/.llm-privacy/vault.db`. Individual entries are encrypted with AES-256-GCM — you cannot read originals without `LLM_PRIVACY_VAULT_KEY`. Use the endpoints above or the `SqliteVault` class in `src/vault.ts` to access entries programmatically.
 
 ## Running Tests
 
@@ -254,7 +256,7 @@ Disable specific patterns: `LLM_PRIVACY_DISABLE_PATTERNS=pii_email,pii_phone_us`
 | `LLM_PRIVACY_VAULT_KEY` | Yes | — | 32-byte base64 AES-256-GCM vault encryption key |
 | `LLM_PROXY_PORT` | No | `4444` | Port the proxy listens on |
 | `LLM_PROXY_TARGET` | No | `https://api.anthropic.com` | Upstream API base URL |
-| `LLM_PRIVACY_VAULT_PATH` | No | `~/.llm-privacy/vault.enc.json` | Shared with middleware if desired |
+| `LLM_PRIVACY_VAULT_PATH` | No | `~/.llm-privacy/vault.db` | Custom SQLite database path |
 | `LLM_PRIVACY_DISABLE_PATTERNS` | No | — | Comma-separated pattern types to skip |
 
 ## Relationship to llm-privacy-middleware

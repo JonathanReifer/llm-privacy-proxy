@@ -42,13 +42,8 @@ export interface VaultEntry {
   sessionId?: string;
 }
 
-export interface VaultData {
-  version: 1;
-  entries: Record<string, VaultEntry>;
-}
-
 export interface IVault {
-  readonly mode: "file" | "memory";
+  readonly mode: "sqlite" | "memory";
   readonly path: string | null;
   get(token: string): Promise<VaultEntry | null>;
   put(entry: VaultEntry): Promise<void>;
