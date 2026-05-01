@@ -8,6 +8,7 @@ const TARGET = (process.env.LLM_PROXY_TARGET ?? "https://api.anthropic.com").rep
 const vault = createVault();
 const logger = new PromptLogger();
 const stats = { requests: 0, tokenized: 0, detokenized: 0, startedAt: new Date().toISOString() };
+let statsDirty = false;
 
 export async function startProxy(): Promise<void> {
   await vault.ready;
@@ -20,10 +21,11 @@ export async function startProxy(): Promise<void> {
     if (saved.detokenized) stats.detokenized = parseInt(saved.detokenized, 10);
   }
 
-  // Persist stats periodically
   const saveStats = () => {
+    if (!statsDirty) return;
     if (vault instanceof SqliteVault) {
       vault.saveStats({ requests: stats.requests, tokenized: stats.tokenized, detokenized: stats.detokenized });
+      statsDirty = false;
     }
   };
   setInterval(saveStats, 60_000).unref();
@@ -109,15 +111,15 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
   const sessionId = req.headers.get("x-session-id") ?? "unknown";
   const isStreaming = body.stream === true;
   stats.requests++;
+  statsDirty = true;
 
   // Tokenize outbound messages
   let originalMessages: unknown[] | undefined;
   if (Array.isArray(body.messages)) {
     try {
-      if (logger.mode === "full") originalMessages = JSON.parse(JSON.stringify(body.messages));
+      if (logger.mode === "full") originalMessages = structuredClone(body.messages);
       const { messages, matchCount } = await tokenizeMessages(body.messages as never, vault, sessionId);
-      const changed = JSON.stringify(messages) !== JSON.stringify(body.messages);
-      if (changed) stats.tokenized++;
+      if (matchCount > 0) { stats.tokenized++; statsDirty = true; }
       body.messages = messages;
 
       if (logger.mode !== "none") {
@@ -163,7 +165,7 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
     const json = await upstream.json();
     const before = JSON.stringify(json);
     const detokenized = await detokenizeBody(json, vault);
-    if (JSON.stringify(detokenized) !== before) stats.detokenized++;
+    if (JSON.stringify(detokenized) !== before) { stats.detokenized++; statsDirty = true; }
     return new Response(JSON.stringify(detokenized), {
       status: upstream.status,
       headers: { ...responseHeaders(upstream.headers), "content-type": "application/json" },

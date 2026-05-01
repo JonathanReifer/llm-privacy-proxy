@@ -26,10 +26,14 @@ function b64uDecode(s: string): Uint8Array {
   return out;
 }
 
+let _aesKey: CryptoKey | null = null;
+
 async function aesKey(): Promise<CryptoKey> {
+  if (_aesKey) return _aesKey;
   const raw = process.env.LLM_PRIVACY_VAULT_KEY;
   if (!raw) throw new Error("LLM_PRIVACY_VAULT_KEY is required");
-  return crypto.subtle.importKey("raw", b64uDecode(raw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  _aesKey = await crypto.subtle.importKey("raw", b64uDecode(raw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  return _aesKey;
 }
 
 async function encryptString(s: string): Promise<string> {
@@ -196,7 +200,9 @@ export class SqliteVault implements IVault {
 
   saveStats(data: Record<string, string | number>): void {
     const stmt = this.db.prepare("INSERT OR REPLACE INTO proxy_stats (key, value) VALUES (?, ?)");
-    for (const [k, v] of Object.entries(data)) stmt.run(k, String(v));
+    this.db.transaction(() => {
+      for (const [k, v] of Object.entries(data)) stmt.run(k, String(v));
+    })();
   }
 
   checkpoint(): void {

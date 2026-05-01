@@ -37,11 +37,10 @@ async function storeMatches(
   vault: IVault,
   sessionId: string
 ): Promise<void> {
-  for (const m of matches) {
-    try {
-      await vault.put({ token: m.token, original: m.original, type: m.type, createdAt: new Date().toISOString(), sessionId });
-    } catch { /* vault write failure must not break proxying */ }
-  }
+  await Promise.all(matches.map(m =>
+    vault.put({ token: m.token, original: m.original, type: m.type, createdAt: new Date().toISOString(), sessionId })
+      .catch(() => { /* vault write failure must not break proxying */ })
+  ));
 }
 
 // ── Inbound: detokenize text in an Anthropic response body ──────────────────
