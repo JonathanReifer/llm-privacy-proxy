@@ -39,6 +39,7 @@ export async function startProxy(): Promise<void> {
 
   Bun.serve({
     port: PORT,
+    idleTimeout: 0, // disable — upstream Anthropic calls can exceed the 10s default
     fetch: handleRequest,
     error(err) {
       process.stderr.write(`[llm-proxy] unhandled server error: ${err}\n`);
@@ -215,7 +216,8 @@ function handleStreamingResponse(upstream: Response): Response {
       const tail = await detok.finalize();
       if (tail) await writer.write(encoder.encode(tail));
     } catch (err) {
-      process.stderr.write(`[llm-proxy] stream error: ${err}\n`);
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[llm-proxy] stream error: ${msg}\n`);
     } finally {
       await writer.close().catch(() => {});
     }
