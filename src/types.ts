@@ -3,12 +3,21 @@ export type PatternType =
   | "api_key_anthropic"
   | "api_key_xai"
   | "api_key_aws_access"
+  | "api_key_aws_secret"
   | "api_key_github"
+  | "api_key_google"
+  | "api_key_slack"
+  | "api_key_stripe"
+  | "api_key_twilio"
+  | "api_key_sendgrid"
   | "api_key_generic"
   | "pii_email"
   | "pii_phone_us"
   | "pii_ssn_us"
-  | "pii_credit_card";
+  | "pii_credit_card"
+  | "pii_ipv4"
+  | "pii_passport_us"
+  | "pii_dob";
 
 export type Severity = "block" | "warn";
 
@@ -40,6 +49,8 @@ export interface VaultEntry {
   type: PatternType;
   createdAt: string;
   sessionId?: string;
+  refCount?: number;
+  lastAccessedAt?: string;
 }
 
 export interface IVault {
@@ -50,4 +61,5 @@ export interface IVault {
   list(limit?: number): Promise<VaultEntry[]>;
   search(query: string): Promise<VaultEntry[]>;
   stats(): Promise<Partial<Record<PatternType, number>>>;
+  hot(limit?: number): Promise<VaultEntry[]>;
 }
