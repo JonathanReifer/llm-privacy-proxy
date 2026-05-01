@@ -62,6 +62,7 @@ function rowToEntry(row: Row, original: string): VaultEntry {
 export class SqliteVault implements IVault {
   readonly mode = "sqlite" as const;
   readonly path: string;
+  readonly ready: Promise<void>; // resolves when startup migration (if any) completes
   private db: Database;
 
   constructor(dbPath?: string) {
@@ -77,7 +78,7 @@ export class SqliteVault implements IVault {
       session_id   TEXT
     )`);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_created_at ON entries(created_at DESC)");
-    void this.migrateFromFile();
+    this.ready = this.migrateFromFile();
   }
 
   private async migrateFromFile(): Promise<void> {

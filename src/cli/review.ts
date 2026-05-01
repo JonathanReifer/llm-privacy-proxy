@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { join } from "path";
 import { statSync } from "fs";
-import { FileVault } from "../vault.js";
+import { SqliteVault } from "../vault.js";
 import type { VaultEntry } from "../types.js";
 
 const args = process.argv.slice(2);
@@ -10,7 +10,7 @@ const subcommand = args[0];
 function vaultPath(): string {
   return (
     process.env.LLM_PRIVACY_VAULT_PATH ??
-    join(process.env.HOME ?? "~", ".llm-privacy", "vault.enc.json")
+    join(process.env.HOME ?? "~", ".llm-privacy", "vault.db")
   );
 }
 
@@ -49,7 +49,8 @@ function printTable(entries: VaultEntry[]): void {
 async function cmdList(): Promise<void> {
   const limitIdx = args.indexOf("--limit");
   const limit = limitIdx >= 0 ? parseInt(args[limitIdx + 1] ?? "50", 10) : 50;
-  const vault = new FileVault(vaultPath());
+  const vault = new SqliteVault(vaultPath());
+  await vault.ready;
   const entries = await vault.list(limit);
   printTable(entries);
   console.log(`\n${entries.length} entries shown.`);
@@ -61,7 +62,8 @@ async function cmdSearch(): Promise<void> {
     console.error("Usage: review search <query>");
     process.exit(1);
   }
-  const vault = new FileVault(vaultPath());
+  const vault = new SqliteVault(vaultPath());
+  await vault.ready;
   const entries = await vault.search(query);
   printTable(entries);
   console.log(`\n${entries.length} match(es) for "${query}".`);
@@ -69,7 +71,8 @@ async function cmdSearch(): Promise<void> {
 
 async function cmdStats(): Promise<void> {
   const p = vaultPath();
-  const vault = new FileVault(p);
+  const vault = new SqliteVault(p);
+  await vault.ready;
   const counts = await vault.stats();
   const total = Object.values(counts).reduce((s, n) => s + (n ?? 0), 0);
 
@@ -84,16 +87,17 @@ async function cmdStats(): Promise<void> {
     const stat = statSync(p);
     const kb = (stat.size / 1024).toFixed(1);
     console.log("─".repeat(40));
-    console.log(`Vault file: ${p} (${kb} KB)`);
-    console.log(`Last write: ${formatDate(stat.mtime.toISOString())}`);
+    console.log(`Vault database: ${p} (${kb} KB)`);
+    console.log(`Last write:     ${formatDate(stat.mtime.toISOString())}`);
   } catch {
-    console.log(`Vault file: ${p} (not found)`);
+    console.log(`Vault database: ${p} (not found)`);
   }
 }
 
 async function cmdExport(): Promise<void> {
   const format = args.includes("--csv") ? "csv" : "json";
-  const vault = new FileVault(vaultPath());
+  const vault = new SqliteVault(vaultPath());
+  await vault.ready;
   const entries = await vault.list(0);
 
   if (format === "csv") {
@@ -118,7 +122,7 @@ Usage:
 
 Environment:
   LLM_PRIVACY_VAULT_KEY   Required — base64 AES-256-GCM key
-  LLM_PRIVACY_VAULT_PATH  Optional — override vault file path
+  LLM_PRIVACY_VAULT_PATH  Optional — override vault database path
 `);
 }
 

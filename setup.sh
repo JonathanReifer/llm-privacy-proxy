@@ -81,6 +81,39 @@ else
   (cd "$SCRIPT_DIR" && bun install --silent)
 fi
 
+# ── Step 2b: Migrate existing file vault to SQLite (if present) ───────────
+
+OLD_VAULT="$HOME/.llm-privacy/vault.enc.json"
+if [ -f "$OLD_VAULT" ]; then
+  echo ""
+  echo "Old file vault detected — migrating to SQLite..."
+
+  # Prefer key already in env; fall back to reading it from bashrc without sourcing
+  if [ -z "${LLM_PRIVACY_VAULT_KEY:-}" ]; then
+    LLM_PRIVACY_VAULT_KEY="$(grep '^export LLM_PRIVACY_VAULT_KEY=' "$BASHRC" 2>/dev/null \
+      | tail -1 | sed 's/^export LLM_PRIVACY_VAULT_KEY="\(.*\)"$/\1/')"
+  fi
+
+  if [ -n "${LLM_PRIVACY_VAULT_KEY:-}" ]; then
+    migrate_out="$(LLM_PRIVACY_VAULT_KEY="$LLM_PRIVACY_VAULT_KEY" bun --eval "
+const { SqliteVault } = await import('${INSTALL_PATH}/src/vault.js');
+const v = new SqliteVault();
+await v.ready;
+" 2>&1 || true)"
+
+    if [ -f "${OLD_VAULT}.migrated" ]; then
+      entries="$(echo "$migrate_out" | grep -oE '[0-9]+ vault entries' | head -1)"
+      echo "  ✓ ${entries:-Vault entries} migrated → ~/.llm-privacy/vault.db"
+      echo "  ✓ Old vault renamed to vault.enc.json.migrated (kept as backup)"
+    else
+      echo "  ! Migration did not complete — proxy will retry automatically on first start"
+    fi
+  else
+    echo "  ! Vault key not available in current shell"
+    echo "    Migration will run automatically on first proxy start after: source ~/.bashrc"
+  fi
+fi
+
 # ── Step 3: Configure Claude Code settings.json ────────────────────────────
 
 echo ""
