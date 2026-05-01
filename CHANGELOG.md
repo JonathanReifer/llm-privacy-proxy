@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-01
+
+### Added
+
+- **Pre-commit secrets scanner** (`bun run check-secrets`): scans staged diff using the proxy's own detection patterns; blocks on `severity: block` matches (API keys, private keys, DB credentials), warns-only on PII; works without `LLM_PRIVACY_HMAC_KEY`
+- **`CLAUDE.md`**: project contribution standards — pre-commit checklist (secrets scan, tests, version, changelog, docs, sync, restart, health verify), versioning rules, installed-copy workflow, Bun constraints, and pattern/vault conventions
+
+### Fixed
+
+- **`idleTimeout` Bun 1.x hard limit**: `Bun.serve` rejects `idleTimeout > 255` with `ERR_INVALID_ARG_TYPE`; default revised to `255` (max allowed, ~4.25 min), env override clamped via `Math.min(..., 255)` to prevent crash
+- **`setup.sh` JSONC parse crash**: Python's `json.load` rejects `~/.claude/settings.json` trailing commas (JSONC format); fixed with `re.sub(r',(\s*[}\]])', r'\1', raw)` before `json.loads()`
+- **Stream error logging**: Bun throws `undefined` (not an `Error`) when the client cancels a mid-stream response; previously logged as `stream error: undefined` noise. Now logs `stream cancelled by client (chunks=N streamDone=F)` for client disconnects and `stream error (chunks=N streamDone=F): <message>` for real errors
+
 ## [0.3.0] - 2026-05-01
 
 ### Added
@@ -69,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upstream error recovery: 502 response on fetch failure, passthrough on non-200 upstream responses
 - BSD 2-Clause license
 
-[Unreleased]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/JonathanReifer/llm-privacy-proxy/releases/tag/v0.1.0

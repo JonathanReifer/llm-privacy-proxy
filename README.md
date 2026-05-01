@@ -320,6 +320,29 @@ Output columns: `Token`, `Type`, `Created`, `Refs` (access count), `Original`.
 
 The CLI reads `LLM_PRIVACY_VAULT_PATH` (defaults to `~/.llm-privacy/vault.db`) and requires `LLM_PRIVACY_VAULT_KEY` to decrypt originals.
 
+## Pre-Commit Secrets Scanner
+
+`bun run check-secrets` scans staged git changes for secrets and PII using the same detection patterns the proxy uses at runtime. Run it before every commit.
+
+```bash
+bun run check-secrets
+# ✓ No staged changes to scan
+
+# With a staged file containing secrets:
+# ⛔  BLOCKED: secrets detected in staged diff
+#   [api_key_openai]  sk-proj-...
+#   [db_connection_string]  postgres://user:pass@host/db
+# Remove secrets from staged files, or bypass with: git commit --no-verify
+```
+
+**Behaviour:**
+- Exits 0 (passes) when no secrets are found, or when only `severity: warn` PII is detected
+- Exits 1 (blocks) when any `severity: block` pattern matches (API keys, private keys, DB credentials)
+- Works without `LLM_PRIVACY_HMAC_KEY` — uses a dummy key for detection only
+- `LLM_PRIVACY_DISABLE_PATTERNS` is respected to skip specific pattern types
+
+To bypass intentionally: `git commit --no-verify`
+
 ## Running Tests
 
 ```bash
