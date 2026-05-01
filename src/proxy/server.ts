@@ -219,8 +219,11 @@ function handleStreamingResponse(upstream: Response): Response {
       const tail = await detok.finalize();
       if (tail) await writer.write(encoder.encode(tail));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[llm-proxy] stream error: ${msg}\n`);
+      // Bun throws undefined when the client disconnects mid-stream (normal, not an error)
+      if (err != null) {
+        const msg = err instanceof Error ? err.message : `${(err as any)?.constructor?.name ?? typeof err}: ${String(err)}`;
+        process.stderr.write(`[llm-proxy] stream error: ${msg}\n`);
+      }
     } finally {
       await writer.close().catch(() => {});
     }
