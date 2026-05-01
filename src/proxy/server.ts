@@ -196,11 +196,14 @@ function handleStreamingResponse(upstream: Response): Response {
     const detok = new StreamDetokenizer(vault_);
     const reader = upstreamBody.getReader();
     let leftover = "";
+    let chunksRead = 0;
+    let streamDone = false;
 
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) { streamDone = true; break; }
+        chunksRead++;
 
         leftover += decoder.decode(value, { stream: true });
         const lines = leftover.split("\n");
@@ -219,10 +222,13 @@ function handleStreamingResponse(upstream: Response): Response {
       const tail = await detok.finalize();
       if (tail) await writer.write(encoder.encode(tail));
     } catch (err) {
-      // Bun throws undefined when the client disconnects mid-stream (normal, not an error)
-      if (err != null) {
+      if (err == null) {
+        // Bun throws undefined/null when the client cancels the response mid-stream.
+        // Log at debug level with context so we can verify this assumption.
+        process.stderr.write(`[llm-proxy] stream cancelled by client (chunks=${chunksRead} streamDone=${streamDone})\n`);
+      } else {
         const msg = err instanceof Error ? err.message : `${(err as any)?.constructor?.name ?? typeof err}: ${String(err)}`;
-        process.stderr.write(`[llm-proxy] stream error: ${msg}\n`);
+        process.stderr.write(`[llm-proxy] stream error (chunks=${chunksRead} streamDone=${streamDone}): ${msg}\n`);
       }
     } finally {
       await writer.close().catch(() => {});
