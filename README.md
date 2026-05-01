@@ -148,6 +148,29 @@ curl -s http://localhost:4444/health | jq '{vaultMode, vaultPath}'
 
 If you see `"vaultMode": "memory"`, the proxy started without the key — stop it, run `source ~/.bashrc`, and restart.
 
+## Prompt Logging
+
+The proxy can log all prompt content to a JSONL file for auditing.
+
+**Modes** (set via `LLM_PRIVACY_LOG_PROMPTS`):
+- `none` (default) — no logging
+- `tokenized` — log the tokenized version of each request (secrets replaced with tokens)
+- `full` — log both original and tokenized versions (stores raw secrets on disk)
+
+Log format (one JSON object per line):
+
+```json
+{
+  "ts": "2026-05-01T00:00:00.000Z",
+  "sessionId": "abc123",
+  "matchCount": 2,
+  "tokenized": ["[\"user\",\"my key is tok_xxx...\"]"],
+  "original": ["[\"user\",\"my key is sk-...\"]"]
+}
+```
+
+Log file path: `~/.llm-privacy/prompts.jsonl` (override with `LLM_PRIVACY_LOG_PATH`).
+
 ## Inspecting the Vault
 
 The proxy exposes live vault inspection endpoints — all data is decrypted in-memory and returned as JSON. These are only available on localhost.
@@ -178,6 +201,14 @@ Increase the limit with `?limit=N` (use `0` for all entries):
 ```bash
 curl -s "http://localhost:4444/vault?limit=200" | jq
 ```
+
+### Most-accessed entries (hot tokens)
+
+```bash
+curl -s "http://localhost:4444/vault/hot?limit=20" | jq
+```
+
+Returns the top N entries ordered by access frequency (`refCount` DESC). Default limit is 20.
 
 ### Counts by pattern type
 
@@ -246,6 +277,20 @@ All patterns apply silently — no prompts, no blocks. The user types freely; th
 | `pii_ssn_us` | `123-45-6789` → `tok_...` |
 | `pii_credit_card` | `4111 1111 1111 1111` → `tok_...` |
 
+**Additional patterns also detected:**
+
+| Pattern | Severity | Description |
+|---|---|---|
+| `api_key_google` | block | Google API key (`AIza...`) |
+| `api_key_slack` | block | Slack token (`xox[baprs]-...`) |
+| `api_key_stripe` | block | Stripe key (`sk_live_`, `sk_test_`, etc.) |
+| `api_key_twilio` | block | Twilio API key (`SK` + 32 hex chars) |
+| `api_key_sendgrid` | block | SendGrid API key (`SG.xxx.xxx`) |
+| `api_key_aws_secret` | block | AWS Secret Access Key (key=value pattern) |
+| `pii_ipv4` | warn | IPv4 address |
+| `pii_passport_us` | warn | US passport number |
+| `pii_dob` | warn | Date of birth (MM/DD/YYYY or MM-DD-YYYY) |
+
 Disable specific patterns: `LLM_PRIVACY_DISABLE_PATTERNS=pii_email,pii_phone_us`
 
 ## Environment Variables
@@ -258,6 +303,8 @@ Disable specific patterns: `LLM_PRIVACY_DISABLE_PATTERNS=pii_email,pii_phone_us`
 | `LLM_PROXY_TARGET` | No | `https://api.anthropic.com` | Upstream API base URL |
 | `LLM_PRIVACY_VAULT_PATH` | No | `~/.llm-privacy/vault.db` | Custom SQLite database path |
 | `LLM_PRIVACY_DISABLE_PATTERNS` | No | — | Comma-separated pattern types to skip |
+| `LLM_PRIVACY_LOG_PROMPTS` | No | `none` | Prompt logging mode: `none`, `tokenized`, or `full` |
+| `LLM_PRIVACY_LOG_PATH` | No | `~/.llm-privacy/prompts.jsonl` | Path for prompt log JSONL file |
 
 ## Relationship to llm-privacy-middleware
 
