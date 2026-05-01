@@ -2,13 +2,14 @@
 
 ## Before Every Commit
 
-1. **Run tests** — `bun test` must pass (57 tests, 0 failures)
-2. **Update version** in `package.json` if shipping a feature or fix (semver: patch for fixes, minor for features)
-3. **Update CHANGELOG.md** — add entry under `[Unreleased]` or bump to a new release section
-4. **Update README.md** if any user-facing behavior, env var, endpoint, or pattern changed
-5. **Sync to installed copy** — `cp src/proxy/server.ts ~/.claude/llm-privacy-proxy/src/proxy/server.ts` (and any other changed src files)
-6. **Restart proxy** after syncing — `~/.claude/llm-privacy-proxy/proxy.sh restart`
-7. **Verify health** — `curl -s http://localhost:4444/health | jq .version` should return the new version
+1. **Scan staged changes for secrets** — `bun run check-secrets` must exit 0 (or exit 0 with warnings you've reviewed). Uses the proxy's own detection patterns. Blocks on `severity: block` matches; warns but passes on PII-only matches. To bypass intentionally: `git commit --no-verify`.
+2. **Run tests** — `bun test` must pass (83 tests, 0 failures)
+3. **Update version** in `package.json` if shipping a feature or fix (semver: patch for fixes, minor for features)
+4. **Update CHANGELOG.md** — add entry under `[Unreleased]` or bump to a new release section
+5. **Update README.md** if any user-facing behavior, env var, endpoint, or pattern changed
+6. **Sync to installed copy** — `cp -r src ~/.claude/llm-privacy-proxy/` (and `package.json` if version changed)
+7. **Restart proxy** after syncing — `~/.claude/llm-privacy-proxy/proxy.sh restart`
+8. **Verify health** — `curl -s http://localhost:4444/health | jq .version` should return the new version
 
 ## Versioning Rules
 
