@@ -1,13 +1,39 @@
-import { createVault } from "../vault.js";
+import { SqliteVault, createVault } from "../vault.js";
 import { tokenizeMessages, detokenizeBody, StreamDetokenizer } from "./transform.js";
+import { PromptLogger } from "./logger.js";
 
 const PORT = parseInt(process.env.LLM_PROXY_PORT ?? "4444", 10);
 const TARGET = (process.env.LLM_PROXY_TARGET ?? "https://api.anthropic.com").replace(/\/$/, "");
 
 const vault = createVault();
+const logger = new PromptLogger();
 const stats = { requests: 0, tokenized: 0, detokenized: 0, startedAt: new Date().toISOString() };
 
-export function startProxy(): void {
+export async function startProxy(): Promise<void> {
+  await vault.ready;
+
+  // Restore persisted counters (startedAt always reflects current process)
+  if (vault instanceof SqliteVault) {
+    const saved = vault.loadStats();
+    if (saved.requests)    stats.requests    = parseInt(saved.requests,    10);
+    if (saved.tokenized)   stats.tokenized   = parseInt(saved.tokenized,   10);
+    if (saved.detokenized) stats.detokenized = parseInt(saved.detokenized, 10);
+  }
+
+  // Persist stats periodically
+  const saveStats = () => {
+    if (vault instanceof SqliteVault) {
+      vault.saveStats({ requests: stats.requests, tokenized: stats.tokenized, detokenized: stats.detokenized });
+    }
+  };
+  setInterval(saveStats, 60_000).unref();
+
+  process.on("SIGTERM", () => {
+    saveStats();
+    if (vault instanceof SqliteVault) vault.checkpoint();
+    process.exit(0);
+  });
+
   Bun.serve({
     port: PORT,
     fetch: handleRequest,
@@ -43,6 +69,14 @@ async function handleRequest(req: Request): Promise<Response> {
     });
   }
 
+  if (req.method === "GET" && url.pathname === "/vault/hot") {
+    const limit = parseInt(url.searchParams.get("limit") ?? "20", 10);
+    const entries = await vault.hot(limit);
+    return new Response(JSON.stringify(entries, null, 2), {
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   if (req.method === "GET" && url.pathname === "/vault/stats") {
     return new Response(JSON.stringify(await vault.stats(), null, 2), {
       headers: { "content-type": "application/json" },
@@ -58,7 +92,6 @@ async function handleRequest(req: Request): Promise<Response> {
     });
   }
 
-  // Only intercept the messages endpoint — passthrough everything else
   if (req.method === "POST" && url.pathname === "/v1/messages") {
     return handleMessages(req, url);
   }
@@ -78,15 +111,28 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
   stats.requests++;
 
   // Tokenize outbound messages
+  let originalMessages: unknown[] | undefined;
   if (Array.isArray(body.messages)) {
     try {
-      const tokenized = await tokenizeMessages(body.messages as never, vault, sessionId);
-      const changed = JSON.stringify(tokenized) !== JSON.stringify(body.messages);
+      if (logger.mode === "full") originalMessages = JSON.parse(JSON.stringify(body.messages));
+      const { messages, matchCount } = await tokenizeMessages(body.messages as never, vault, sessionId);
+      const changed = JSON.stringify(messages) !== JSON.stringify(body.messages);
       if (changed) stats.tokenized++;
-      body.messages = tokenized;
+      body.messages = messages;
+
+      if (logger.mode !== "none") {
+        logger.log({
+          ts: new Date().toISOString(),
+          sessionId,
+          matchCount,
+          tokenized: (messages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)),
+          ...(logger.mode === "full" && originalMessages
+            ? { original: (originalMessages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)) }
+            : {}),
+        });
+      }
     } catch (err) {
       process.stderr.write(`[llm-proxy] tokenize error: ${err}\n`);
-      // Fail-open: forward original messages rather than dropping the request
     }
   }
 
@@ -113,7 +159,6 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
     return handleStreamingResponse(upstream);
   }
 
-  // Non-streaming: detokenize full response body
   try {
     const json = await upstream.json();
     const before = JSON.stringify(json);
@@ -159,7 +204,6 @@ function handleStreamingResponse(upstream: Response): Response {
         }
       }
 
-      // Flush remaining lines and detokenizer buffer
       if (leftover) {
         const out = await processSSELine(leftover, detok);
         await writer.write(encoder.encode(out + "\n"));
@@ -188,7 +232,6 @@ async function processSSELine(line: string, detok: StreamDetokenizer): Promise<s
   let event: Record<string, unknown>;
   try { event = JSON.parse(raw); } catch { return line; }
 
-  // Anthropic streaming: content_block_delta with text_delta
   if (
     event.type === "content_block_delta" &&
     typeof event.delta === "object" && event.delta !== null
@@ -214,8 +257,6 @@ async function passthrough(req: Request, url: URL): Promise<Response> {
 
 function forwardHeaders(h: Headers): Record<string, string> {
   const out: Record<string, string> = {};
-  // Strip hop-by-hop + accept-encoding: let Bun negotiate compression internally
-  // so we never receive a compressed body we'd need to re-encode for the client
   const strip = ["host", "connection", "transfer-encoding", "accept-encoding"];
   h.forEach((v, k) => {
     if (!strip.includes(k.toLowerCase())) out[k] = v;
@@ -225,8 +266,6 @@ function forwardHeaders(h: Headers): Record<string, string> {
 
 function responseHeaders(h: Headers): Record<string, string> {
   const out: Record<string, string> = {};
-  // Strip hop-by-hop and compression headers — Bun auto-decompresses, so forwarding
-  // content-encoding/content-length would cause the client to double-decompress (ZlibError)
   const strip = ["transfer-encoding", "connection", "content-encoding", "content-length"];
   h.forEach((v, k) => {
     if (!strip.includes(k.toLowerCase())) out[k] = v;
