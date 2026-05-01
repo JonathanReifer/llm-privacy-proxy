@@ -37,9 +37,11 @@ export async function startProxy(): Promise<void> {
     process.exit(0);
   });
 
+  const idleTimeout = parseInt(process.env.LLM_PROXY_IDLE_TIMEOUT ?? "600", 10);
+
   Bun.serve({
     port: PORT,
-    idleTimeout: 0, // disable — upstream Anthropic calls can exceed the 10s default
+    idleTimeout, // Anthropic SSE streams can have long gaps; 600s still cleans up dead connections
     fetch: handleRequest,
     error(err) {
       process.stderr.write(`[llm-proxy] unhandled server error: ${err}\n`);

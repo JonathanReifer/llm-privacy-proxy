@@ -348,6 +348,7 @@ curl http://localhost:4444/v1/messages \
 | `LLM_PRIVACY_DISABLE_PATTERNS` | No | — | Comma-separated pattern types to skip |
 | `LLM_PRIVACY_LOG_PROMPTS` | No | `none` | Prompt logging mode: `none`, `tokenized`, or `full` |
 | `LLM_PRIVACY_LOG_PATH` | No | `~/.llm-privacy/prompts.jsonl` | Path for prompt log JSONL file |
+| `LLM_PROXY_IDLE_TIMEOUT` | No | `600` | Socket idle timeout in seconds; 0 disables — 600s covers all Anthropic SSE thinking gaps |
 
 ## Relationship to llm-privacy-middleware
 
