@@ -9,4 +9,4 @@ if (!process.env.LLM_PRIVACY_VAULT_KEY) {
   process.exit(1);
 }
 
-startProxy();
+await startProxy();

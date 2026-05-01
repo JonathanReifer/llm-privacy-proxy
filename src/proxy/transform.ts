@@ -10,22 +10,26 @@ export async function tokenizeMessages(
   messages: Message[],
   vault: IVault,
   sessionId: string
-): Promise<Message[]> {
-  return Promise.all(messages.map(async msg => {
+): Promise<{ messages: Message[]; matchCount: number }> {
+  let matchCount = 0;
+  const result = await Promise.all(messages.map(async msg => {
     const content = msg.content;
     if (typeof content === "string") {
       const { result, matches } = await tokenizeText(content);
+      matchCount += matches.length;
       await storeMatches(matches, vault, sessionId);
       return { ...msg, content: result };
     }
     const blocks = await Promise.all((content as ContentBlock[]).map(async block => {
       if (block.type !== "text" || typeof block.text !== "string") return block;
       const { result, matches } = await tokenizeText(block.text);
+      matchCount += matches.length;
       await storeMatches(matches, vault, sessionId);
       return { ...block, text: result };
     }));
     return { ...msg, content: blocks };
   }));
+  return { messages: result, matchCount };
 }
 
 async function storeMatches(
@@ -33,11 +37,10 @@ async function storeMatches(
   vault: IVault,
   sessionId: string
 ): Promise<void> {
-  for (const m of matches) {
-    try {
-      await vault.put({ token: m.token, original: m.original, type: m.type, createdAt: new Date().toISOString(), sessionId });
-    } catch { /* vault write failure must not break proxying */ }
-  }
+  await Promise.all(matches.map(m =>
+    vault.put({ token: m.token, original: m.original, type: m.type, createdAt: new Date().toISOString(), sessionId })
+      .catch(() => { /* vault write failure must not break proxying */ })
+  ));
 }
 
 // ── Inbound: detokenize text in an Anthropic response body ──────────────────

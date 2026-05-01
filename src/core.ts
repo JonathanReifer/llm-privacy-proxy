@@ -11,6 +11,15 @@ export const PATTERNS: PatternDefinition[] = [
   { type: "pii_phone_us",      regex: /(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g,                                severity: "warn",  description: "US phone number" },
   { type: "pii_ssn_us",        regex: /\b(?!000|666|9\d{2})\d{3}[-\s](?!00)\d{2}[-\s](?!0000)\d{4}\b/g,                    severity: "block", description: "US SSN" },
   { type: "pii_credit_card",   regex: /\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g,   severity: "block", description: "Credit card number" },
+  { type: "api_key_google",     regex: /AIza[0-9A-Za-z\-_]{35}/g,                                                                  severity: "block", description: "Google API key" },
+  { type: "api_key_slack",      regex: /xox[baprs]-[0-9A-Za-z\-]{10,}/g,                                                           severity: "block", description: "Slack token" },
+  { type: "api_key_stripe",     regex: /(?:sk|pk)_(?:live|test)_[0-9a-zA-Z]{24,}/g,                                                severity: "block", description: "Stripe key" },
+  { type: "api_key_twilio",     regex: /SK[0-9a-fA-F]{32}/g,                                                                       severity: "block", description: "Twilio API key" },
+  { type: "api_key_sendgrid",   regex: /SG\.[A-Za-z0-9\-_]{22}\.[A-Za-z0-9\-_]{43}/g,                                             severity: "block", description: "SendGrid API key" },
+  { type: "api_key_aws_secret", regex: /(?:aws[_\-\s]?secret|secret[_\-\s]?access[_\-\s]?key)\s*[:=]\s*['"]?([A-Za-z0-9+/]{40})/gi, severity: "block", description: "AWS Secret Access Key" },
+  { type: "pii_ipv4",           regex: /\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g,           severity: "warn",  description: "IPv4 address" },
+  { type: "pii_passport_us",    regex: /\b[A-Z]{1,2}[0-9]{6,9}\b/g,                                                               severity: "block", description: "US passport number" },
+  { type: "pii_dob",            regex: /\b(?:0[1-9]|1[0-2])[-\/](?:0[1-9]|[12]\d|3[01])[-\/](?:19|20)\d{2}\b/g,                  severity: "warn",  description: "Date of birth" },
 ];
 
 function base64urlEncode(bytes: Uint8Array): string {

@@ -27,11 +27,12 @@ function printTable(entries: VaultEntry[]): void {
     console.log("No entries found.");
     return;
   }
-  const colWidths = { token: 16, type: 22, created: 20, original: 42 };
+  const colWidths = { token: 16, type: 22, created: 20, refs: 6, original: 38 };
   const header =
     "Token".padEnd(colWidths.token) +
     "Type".padEnd(colWidths.type) +
     "Created".padEnd(colWidths.created) +
+    "Refs".padEnd(colWidths.refs) +
     "Original";
   const divider = "─".repeat(header.length + colWidths.original);
   console.log(header);
@@ -41,6 +42,7 @@ function printTable(entries: VaultEntry[]): void {
       e.token.padEnd(colWidths.token) +
       e.type.padEnd(colWidths.type) +
       formatDate(e.createdAt).padEnd(colWidths.created) +
+      String(e.refCount ?? 0).padEnd(colWidths.refs) +
       truncate(e.original);
     console.log(row);
   }

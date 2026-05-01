@@ -5,7 +5,15 @@ import type { IVault, PatternType, VaultEntry } from "./types.js";
 
 interface VaultData { version: 1; entries: Record<string, VaultEntry>; }
 interface Envelope  { v: 1; iv: string; tag: string; ciphertext: string; }
-type Row = { token: string; original_enc: string; type: string; created_at: string; session_id: string | null };
+type Row = {
+  token: string;
+  original_enc: string;
+  type: string;
+  created_at: string;
+  session_id: string | null;
+  ref_count: number;
+  last_accessed_at: string | null;
+};
 
 function b64uEncode(bytes: Uint8Array): string {
   let s = ""; for (const b of bytes) s += String.fromCharCode(b);
@@ -18,10 +26,14 @@ function b64uDecode(s: string): Uint8Array {
   return out;
 }
 
+let _aesKey: CryptoKey | null = null;
+
 async function aesKey(): Promise<CryptoKey> {
+  if (_aesKey) return _aesKey;
   const raw = process.env.LLM_PRIVACY_VAULT_KEY;
   if (!raw) throw new Error("LLM_PRIVACY_VAULT_KEY is required");
-  return crypto.subtle.importKey("raw", b64uDecode(raw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  _aesKey = await crypto.subtle.importKey("raw", b64uDecode(raw), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  return _aesKey;
 }
 
 async function encryptString(s: string): Promise<string> {
@@ -54,7 +66,14 @@ async function decryptVaultData(raw: string): Promise<VaultData> {
 }
 
 function rowToEntry(row: Row, original: string): VaultEntry {
-  const e: VaultEntry = { token: row.token, original, type: row.type as PatternType, createdAt: row.created_at };
+  const e: VaultEntry = {
+    token: row.token,
+    original,
+    type: row.type as PatternType,
+    createdAt: row.created_at,
+    refCount: row.ref_count,
+    lastAccessedAt: row.last_accessed_at ?? undefined,
+  };
   if (row.session_id) e.sessionId = row.session_id;
   return e;
 }
@@ -62,7 +81,7 @@ function rowToEntry(row: Row, original: string): VaultEntry {
 export class SqliteVault implements IVault {
   readonly mode = "sqlite" as const;
   readonly path: string;
-  readonly ready: Promise<void>; // resolves when startup migration (if any) completes
+  readonly ready: Promise<void>;
   private db: Database;
 
   constructor(dbPath?: string) {
@@ -75,9 +94,19 @@ export class SqliteVault implements IVault {
       original_enc TEXT NOT NULL,
       type         TEXT NOT NULL,
       created_at   TEXT NOT NULL,
-      session_id   TEXT
+      session_id   TEXT,
+      ref_count    INTEGER NOT NULL DEFAULT 0,
+      last_accessed_at TEXT
     )`);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_created_at ON entries(created_at DESC)");
+    // Migrate existing DBs that pre-date these columns before creating the index that depends on ref_count
+    try { this.db.run("ALTER TABLE entries ADD COLUMN ref_count INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+    try { this.db.run("ALTER TABLE entries ADD COLUMN last_accessed_at TEXT"); } catch { /* already exists */ }
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_ref_count ON entries(ref_count DESC)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS proxy_stats (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
     this.ready = this.migrateFromFile();
   }
 
@@ -87,7 +116,7 @@ export class SqliteVault implements IVault {
     try {
       const data = await decryptVaultData(await Bun.file(oldPath).text());
       const stmt = this.db.prepare(
-        "INSERT OR IGNORE INTO entries (token, original_enc, type, created_at, session_id) VALUES (?, ?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO entries (token, original_enc, type, created_at, session_id, ref_count) VALUES (?, ?, ?, ?, ?, 0)"
       );
       let n = 0;
       for (const e of Object.values(data.entries)) {
@@ -103,22 +132,40 @@ export class SqliteVault implements IVault {
 
   async get(token: string): Promise<VaultEntry | null> {
     const row = this.db.query<Row, [string]>(
-      "SELECT token, original_enc, type, created_at, session_id FROM entries WHERE token = ?"
+      "SELECT token, original_enc, type, created_at, session_id, ref_count, last_accessed_at FROM entries WHERE token = ?"
     ).get(token);
     if (!row) return null;
-    return rowToEntry(row, await decryptString(row.original_enc));
+    const now = new Date().toISOString();
+    this.db.run(
+      "UPDATE entries SET ref_count = ref_count + 1, last_accessed_at = ? WHERE token = ?",
+      now, token
+    );
+    return rowToEntry({ ...row, ref_count: row.ref_count + 1, last_accessed_at: now }, await decryptString(row.original_enc));
   }
 
   async put(entry: VaultEntry): Promise<void> {
+    const enc = await encryptString(entry.original);
+    const now = new Date().toISOString();
     this.db.run(
-      "INSERT OR REPLACE INTO entries (token, original_enc, type, created_at, session_id) VALUES (?, ?, ?, ?, ?)",
-      entry.token, await encryptString(entry.original), entry.type, entry.createdAt, entry.sessionId ?? null
+      `INSERT INTO entries (token, original_enc, type, created_at, session_id, ref_count, last_accessed_at)
+       VALUES (?, ?, ?, ?, ?, 0, NULL)
+       ON CONFLICT(token) DO UPDATE SET
+         ref_count = ref_count + 1,
+         last_accessed_at = ?`,
+      entry.token, enc, entry.type, entry.createdAt, entry.sessionId ?? null, now
     );
   }
 
   async list(limit = 50): Promise<VaultEntry[]> {
     const rows = this.db.query<Row, [number]>(
-      "SELECT token, original_enc, type, created_at, session_id FROM entries ORDER BY created_at DESC LIMIT ?"
+      "SELECT token, original_enc, type, created_at, session_id, ref_count, last_accessed_at FROM entries ORDER BY created_at DESC LIMIT ?"
+    ).all(limit > 0 ? limit : -1);
+    return Promise.all(rows.map(async r => rowToEntry(r, await decryptString(r.original_enc))));
+  }
+
+  async hot(limit = 20): Promise<VaultEntry[]> {
+    const rows = this.db.query<Row, [number]>(
+      "SELECT token, original_enc, type, created_at, session_id, ref_count, last_accessed_at FROM entries ORDER BY ref_count DESC LIMIT ?"
     ).all(limit > 0 ? limit : -1);
     return Promise.all(rows.map(async r => rowToEntry(r, await decryptString(r.original_enc))));
   }
@@ -127,7 +174,7 @@ export class SqliteVault implements IVault {
     const q = query.toLowerCase();
     if (q.startsWith("tok_")) {
       const rows = this.db.query<Row, [string]>(
-        "SELECT token, original_enc, type, created_at, session_id FROM entries WHERE token LIKE ?"
+        "SELECT token, original_enc, type, created_at, session_id, ref_count, last_accessed_at FROM entries WHERE token LIKE ?"
       ).all(`%${q}%`);
       return Promise.all(rows.map(async r => rowToEntry(r, await decryptString(r.original_enc))));
     }
@@ -143,20 +190,68 @@ export class SqliteVault implements IVault {
     for (const row of rows) c[row.type as PatternType] = row.n;
     return c;
   }
+
+  loadStats(): Record<string, string> {
+    const rows = this.db.query<{ key: string; value: string }, []>(
+      "SELECT key, value FROM proxy_stats"
+    ).all();
+    return Object.fromEntries(rows.map(r => [r.key, r.value]));
+  }
+
+  saveStats(data: Record<string, string | number>): void {
+    const stmt = this.db.prepare("INSERT OR REPLACE INTO proxy_stats (key, value) VALUES (?, ?)");
+    this.db.transaction(() => {
+      for (const [k, v] of Object.entries(data)) stmt.run(k, String(v));
+    })();
+  }
+
+  checkpoint(): void {
+    this.db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+  }
 }
 
 export class MemoryVault implements IVault {
   readonly mode = "memory" as const;
   readonly path = null;
   private store = new Map<string, VaultEntry>();
-  async get(t: string) { return this.store.get(t) ?? null; }
-  async put(e: VaultEntry) { this.store.set(e.token, e); }
+
+  async get(t: string) {
+    const entry = this.store.get(t);
+    if (!entry) return null;
+    const updated = { ...entry, refCount: (entry.refCount ?? 0) + 1, lastAccessedAt: new Date().toISOString() };
+    this.store.set(t, updated);
+    return updated;
+  }
+
+  async put(e: VaultEntry) {
+    const existing = this.store.get(e.token);
+    if (existing) {
+      this.store.set(e.token, { ...existing, refCount: (existing.refCount ?? 0) + 1, lastAccessedAt: new Date().toISOString() });
+    } else {
+      this.store.set(e.token, { ...e, refCount: 0 });
+    }
+  }
+
   async list(limit = 50) {
     const all = [...this.store.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return limit > 0 ? all.slice(0, limit) : all;
   }
-  async search(q: string) { const ql = q.toLowerCase(); return [...this.store.values()].filter(e => e.token.includes(ql) || e.original.toLowerCase().includes(ql)); }
-  async stats() { const c: Partial<Record<PatternType, number>> = {}; for (const e of this.store.values()) c[e.type] = (c[e.type] ?? 0) + 1; return c; }
+
+  async hot(limit = 20) {
+    const all = [...this.store.values()].sort((a, b) => (b.refCount ?? 0) - (a.refCount ?? 0));
+    return limit > 0 ? all.slice(0, limit) : all;
+  }
+
+  async search(q: string) {
+    const ql = q.toLowerCase();
+    return [...this.store.values()].filter(e => e.token.includes(ql) || e.original.toLowerCase().includes(ql));
+  }
+
+  async stats() {
+    const c: Partial<Record<PatternType, number>> = {};
+    for (const e of this.store.values()) c[e.type] = (c[e.type] ?? 0) + 1;
+    return c;
+  }
 }
 
 export function createVault(path?: string): IVault {
