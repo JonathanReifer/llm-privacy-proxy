@@ -37,11 +37,12 @@ export async function startProxy(): Promise<void> {
     process.exit(0);
   });
 
-  const idleTimeout = parseInt(process.env.LLM_PROXY_IDLE_TIMEOUT ?? "600", 10);
+  // Bun 1.x caps idleTimeout at 255 (8-bit). 255s covers all SSE thinking gaps and still reclaims dead connections.
+  const idleTimeout = Math.min(parseInt(process.env.LLM_PROXY_IDLE_TIMEOUT ?? "255", 10), 255);
 
   Bun.serve({
     port: PORT,
-    idleTimeout, // Anthropic SSE streams can have long gaps; 600s still cleans up dead connections
+    idleTimeout,
     fetch: handleRequest,
     error(err) {
       process.stderr.write(`[llm-proxy] unhandled server error: ${err}\n`);
