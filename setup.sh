@@ -136,8 +136,12 @@ settings_path = sys.argv[1]
 proxy_url     = sys.argv[2]
 hook_cmd      = sys.argv[3]
 
+import re
 with open(settings_path, 'r') as f:
-    settings = json.load(f)
+    raw = f.read()
+# Strip trailing commas before ] or } (settings.json uses JSONC-style trailing commas)
+raw = re.sub(r',(\s*[}\]])', r'\1', raw)
+settings = json.loads(raw)
 
 changed = []
 
