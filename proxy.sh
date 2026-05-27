@@ -22,8 +22,17 @@ load_env() {
 
 is_running() {
   local pid
-  pid="$(cat "$PID_FILE" 2>/dev/null)" || return 1
-  kill -0 "$pid" 2>/dev/null
+  # Primary check: PID file
+  pid="$(cat "$PID_FILE" 2>/dev/null)" && kill -0 "$pid" 2>/dev/null && return 0
+  # Fallback: if port is already bound (e.g. after /tmp cleared or proxy started
+  # outside proxy.sh), detect the listener and adopt it into the PID file.
+  # Use -sTCP:LISTEN to match only the server, not TCP clients on the same port.
+  pid="$(lsof -ti "tcp:${PROXY_PORT}" -sTCP:LISTEN 2>/dev/null | head -1)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "$pid" > "$PID_FILE"
+    return 0
+  fi
+  return 1
 }
 
 get_pid() {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`proxy.sh is_running` blind spot**: if the proxy was started outside `proxy.sh` (or `/tmp` was cleared), `is_running()` returned false even though the port was bound — causing `start` to attempt a second instance and `status`/`stop` to report the proxy as stopped. Fixed with an `lsof -ti tcp:PORT -sTCP:LISTEN` fallback that adopts the listening process into the PID file. `-sTCP:LISTEN` is required to avoid matching TCP client connections on the same port (e.g. Claude Code's own requests to the proxy).
+
 ### Added
 
 - **Streaming integration test suite** (`tests/streaming.test.ts`): 20 tests directly exercising the SSE tail-injection state machine — `isTerminalLine()` unit tests, ordering verification (synthetic delta before `content_block_stop`), full-text reconstruction, fallback path, and edge cases. Export `isTerminalLine` for testability. (105 tests total)
