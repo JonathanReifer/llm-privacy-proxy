@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Streaming integration test suite** (`tests/streaming.test.ts`): 20 tests directly exercising the SSE tail-injection state machine — `isTerminalLine()` unit tests, ordering verification (synthetic delta before `content_block_stop`), full-text reconstruction, fallback path, and edge cases. Export `isTerminalLine` for testability. (105 tests total)
+
+### Notes
+
+- The "last 3 chars" characterisation is accurate for plain text. When a privacy token (`tok_XXXX...`) is split at the very end of a stream, `drain()` can hold back up to 15 chars (the incomplete token suffix). `finalize()` returns all held-back content in both cases; the fix handles them identically.
+
 ## [0.3.2] - 2026-05-27
 
 ### Fixed

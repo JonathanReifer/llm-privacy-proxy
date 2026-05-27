@@ -310,7 +310,7 @@ async function processSSELine(line: string, detok: StreamDetokenizer): Promise<s
  * arrives, no further content_block_delta events will follow (Anthropic spec).
  * Primary detection via `event: X` header lines; data-line JSON type as fallback.
  */
-function isTerminalLine(line: string): boolean {
+export function isTerminalLine(line: string): boolean {
   if (
     line === "event: content_block_stop" ||
     line === "event: message_delta" ||
