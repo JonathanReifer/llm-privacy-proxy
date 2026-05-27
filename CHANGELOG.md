@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-27
+
+### Fixed
+
+- **Stream tail truncation**: the last ~3 characters of every streamed response were silently discarded. `StreamDetokenizer.drain()` holds back 3 chars per chunk to guard against `tok_` tokens split across SSE chunks. At stream end, `finalize()` returned those chars — but they were written as raw bytes *after* the SSE `message_stop` event, which the Anthropic SDK had already treated as end-of-stream. Fixed by buffering terminal SSE events (`content_block_stop`, `message_delta`, `message_stop`) and injecting the tail as a proper `content_block_delta` SSE event before them. Added `isTerminalLine()` helper and 2 new tests (85 total).
+
 ## [0.3.1] - 2026-05-01
 
 ### Added

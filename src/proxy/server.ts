@@ -198,6 +198,9 @@ function handleStreamingResponse(upstream: Response): Response {
     let leftover = "";
     let chunksRead = 0;
     let streamDone = false;
+    const terminalBuf: string[] = [];
+    let inTerminalPhase = false;
+    let lastContentIndex = 0;
 
     try {
       while (true) {
@@ -210,17 +213,54 @@ function handleStreamingResponse(upstream: Response): Response {
         leftover = lines.pop() ?? "";
 
         for (const line of lines) {
-          const out = await processSSELine(line, detok);
-          await writer.write(encoder.encode(out + "\n"));
+          if (inTerminalPhase || isTerminalLine(line)) {
+            inTerminalPhase = true;
+            terminalBuf.push(line);
+          } else {
+            const out = await processSSELine(line, detok);
+            await writer.write(encoder.encode(out + "\n"));
+            if (line.startsWith("data: ")) {
+              try {
+                const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+                if (ev.type === "content_block_delta" && typeof ev.index === "number") {
+                  lastContentIndex = ev.index;
+                }
+              } catch {}
+            }
+          }
         }
       }
 
       if (leftover) {
-        const out = await processSSELine(leftover, detok);
-        await writer.write(encoder.encode(out + "\n"));
+        if (inTerminalPhase || isTerminalLine(leftover)) {
+          inTerminalPhase = true;
+          terminalBuf.push(leftover);
+        } else {
+          const out = await processSSELine(leftover, detok);
+          await writer.write(encoder.encode(out + "\n"));
+        }
       }
       const tail = await detok.finalize();
-      if (tail) await writer.write(encoder.encode(tail));
+      if (inTerminalPhase) {
+        // Inject tail as a proper SSE event BEFORE the terminal events so the SDK
+        // sees it before message_stop and doesn't discard it.
+        if (tail) {
+          const syntheticEvent = {
+            type: "content_block_delta",
+            index: lastContentIndex,
+            delta: { type: "text_delta", text: tail },
+          };
+          await writer.write(encoder.encode("event: content_block_delta\n"));
+          await writer.write(encoder.encode("data: " + JSON.stringify(syntheticEvent) + "\n\n"));
+        }
+        // Flush all buffered terminal events in order
+        for (const line of terminalBuf) {
+          await writer.write(encoder.encode(line + "\n"));
+        }
+      } else {
+        // Fallback: no terminal events seen (non-Anthropic stream or empty body)
+        if (tail) await writer.write(encoder.encode(tail));
+      }
     } catch (err) {
       if (err == null) {
         // Bun throws undefined/null when the client cancels the response mid-stream.
@@ -262,6 +302,32 @@ async function processSSELine(line: string, detok: StreamDetokenizer): Promise<s
   }
 
   return line;
+}
+
+/**
+ * Returns true when `line` marks the start of the terminal SSE event group —
+ * i.e., content_block_stop, message_delta, or message_stop. Once any of these
+ * arrives, no further content_block_delta events will follow (Anthropic spec).
+ * Primary detection via `event: X` header lines; data-line JSON type as fallback.
+ */
+function isTerminalLine(line: string): boolean {
+  if (
+    line === "event: content_block_stop" ||
+    line === "event: message_delta" ||
+    line === "event: message_stop"
+  ) return true;
+
+  if (line.startsWith("data: ")) {
+    try {
+      const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+      return (
+        ev.type === "content_block_stop" ||
+        ev.type === "message_delta" ||
+        ev.type === "message_stop"
+      );
+    } catch {}
+  }
+  return false;
 }
 
 async function passthrough(req: Request, url: URL): Promise<Response> {

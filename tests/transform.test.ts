@@ -331,4 +331,30 @@ describe("StreamDetokenizer", () => {
     const tail = await detok.finalize();
     expect(part + tail).toContain("tok_");
   });
+
+  it("finalize() returns the held-back tail chars (ISC-17)", async () => {
+    // drain() holds back the last 3 chars to guard against tok_ splits.
+    // finalize() must return exactly those chars so callers can emit them.
+    const vault = new MemoryVault();
+    const detok = new StreamDetokenizer(vault);
+    const text = "Hello, world! End."; // ends in "nd." — 3 chars held back
+    const flushed = await detok.push(text);
+    const tail = await detok.finalize();
+    // push should emit all-but-last-3; finalize returns the rest
+    expect(tail).toBe("nd.");
+    expect(flushed).toBe("Hello, world! E");
+  });
+
+  it("push() + finalize() reconstructs complete text without truncation (ISC-18)", async () => {
+    // Validates that no characters are lost across a multi-chunk stream.
+    const vault = new MemoryVault();
+    const detok = new StreamDetokenizer(vault);
+    const chunks = ["The quick ", "brown fox ", "jumps over ", "the lazy dog."];
+    let output = "";
+    for (const chunk of chunks) {
+      output += await detok.push(chunk);
+    }
+    output += await detok.finalize();
+    expect(output).toBe("The quick brown fox jumps over the lazy dog.");
+  });
 });
