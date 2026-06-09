@@ -1,10 +1,14 @@
 import { SqliteVault, createVault } from "../vault.js";
 import { tokenizeMessages, detokenizeBody, StreamDetokenizer } from "./transform.js";
 import { PromptLogger } from "./logger.js";
+import { forwardToOllama, translateOllamaStreamToAnthropic } from "../backends/ollama.js";
 import pkg from "../../package.json";
 
 const PORT = parseInt(process.env.LLM_PROXY_PORT ?? "4444", 10);
-const TARGET = (process.env.LLM_PROXY_TARGET ?? "https://api.anthropic.com").replace(/\/$/, "");
+const BACKEND = (process.env.PROXY_BACKEND ?? "anthropic").toLowerCase();
+const TARGET = BACKEND === "ollama"
+  ? (process.env.LLM_PROXY_TARGET ?? "http://192.168.30.51:11434").replace(/\/$/, "")
+  : (process.env.LLM_PROXY_TARGET ?? "https://api.anthropic.com").replace(/\/$/, "");
 
 const vault = createVault();
 const logger = new PromptLogger();
@@ -52,7 +56,7 @@ export async function startProxy(): Promise<void> {
       });
     },
   });
-  console.log(`[llm-proxy] listening on http://localhost:${PORT} → ${TARGET}`);
+  console.log(`[llm-proxy] listening on http://localhost:${PORT} → ${TARGET} [backend: ${BACKEND}]`);
 }
 
 async function handleRequest(req: Request): Promise<Response> {
@@ -62,6 +66,7 @@ async function handleRequest(req: Request): Promise<Response> {
     return new Response(JSON.stringify({
       status: "ok",
       version: pkg.version,
+      backend: BACKEND,
       target: TARGET,
       vaultMode: vault.mode,
       vaultPath: vault.path,
@@ -98,6 +103,29 @@ async function handleRequest(req: Request): Promise<Response> {
     return new Response(JSON.stringify(results, null, 2), {
       headers: { "content-type": "application/json" },
     });
+  }
+
+  if (req.method === "GET" && url.pathname === "/v1/models") {
+    if (BACKEND === "ollama") {
+      try {
+        const tagsResp = await fetch(`${TARGET}/api/tags`);
+        const tags = await tagsResp.json() as { models?: Array<{ name: string; modified_at: string }> };
+        const models = (tags.models ?? []).map(m => ({
+          id: m.name,
+          object: "model",
+          created: Math.floor(new Date(m.modified_at).getTime() / 1000),
+          owned_by: "ollama",
+        }));
+        return new Response(JSON.stringify({ object: "list", data: models }), {
+          headers: { "content-type": "application/json" },
+        });
+      } catch {
+        return new Response(JSON.stringify({ object: "list", data: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+    return passthrough(req, url);
   }
 
   if (req.method === "POST" && url.pathname === "/v1/messages") {
@@ -142,6 +170,29 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
     } catch (err) {
       process.stderr.write(`[llm-proxy] tokenize error: ${err}\n`);
     }
+  }
+
+  // Ollama backend: format-translate and forward
+  if (BACKEND === "ollama") {
+    let ollamaResp: Response;
+    try {
+      ollamaResp = await forwardToOllama(body);
+    } catch (err) {
+      process.stderr.write(`[llm-proxy] ollama upstream error: ${err}\n`);
+      return new Response(JSON.stringify({ error: "ollama unavailable" }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (!ollamaResp.ok) {
+      const errText = await ollamaResp.text().catch(() => "");
+      process.stderr.write(`[llm-proxy] ollama error ${ollamaResp.status}: ${errText.slice(0, 200)}\n`);
+      return new Response(JSON.stringify({ error: `ollama error: ${ollamaResp.status}` }), {
+        status: ollamaResp.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return translateOllamaStreamToAnthropic(ollamaResp, vault);
   }
 
   let upstream: Response;

@@ -89,6 +89,7 @@ export class SqliteVault implements IVault {
     mkdirSync(dirname(this.path), { recursive: true });
     this.db = new Database(this.path);
     this.db.run("PRAGMA journal_mode=WAL");
+    this.db.run("PRAGMA busy_timeout = 5000");
     this.db.run(`CREATE TABLE IF NOT EXISTS entries (
       token        TEXT PRIMARY KEY,
       original_enc TEXT NOT NULL,

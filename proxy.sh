@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proxy.sh — manage the llm-privacy-proxy daemon
-# Usage: proxy.sh {start|stop|restart|status}
+# Usage: proxy.sh {start|stop|restart|status|start-claude|start-ollama}
 
 set -euo pipefail
 
@@ -126,13 +126,36 @@ print(f\"  Since:    {d.get('startedAt','?')}\")
   fi
 }
 
+cmd_start_claude() {
+  PID_FILE="/tmp/llm-proxy-claude.pid"
+  LOG_FILE="/tmp/llm-proxy-claude.log"
+  PROXY_PORT="4444"
+  PROXY_URL="http://localhost:4444"
+  export LLM_PROXY_PORT="4444"
+  export PROXY_BACKEND="anthropic"
+  unset LLM_PROXY_TARGET 2>/dev/null || true
+  cmd_start
+}
+
+cmd_start_ollama() {
+  PID_FILE="/tmp/llm-proxy-ollama.pid"
+  LOG_FILE="/tmp/llm-proxy-ollama.log"
+  PROXY_PORT="4445"
+  PROXY_URL="http://localhost:4445"
+  export LLM_PROXY_PORT="4445"
+  export PROXY_BACKEND="ollama"
+  cmd_start
+}
+
 case "${1:-}" in
-  start)   cmd_start   ;;
-  stop)    cmd_stop    ;;
-  restart) cmd_restart ;;
-  status)  cmd_status  ;;
+  start)         cmd_start         ;;
+  stop)          cmd_stop          ;;
+  restart)       cmd_restart       ;;
+  status)        cmd_status        ;;
+  start-claude)  cmd_start_claude  ;;
+  start-ollama)  cmd_start_ollama  ;;
   *)
-    echo "Usage: $(basename "$0") {start|stop|restart|status}"
+    echo "Usage: $(basename "$0") {start|stop|restart|status|start-claude|start-ollama}"
     exit 1
     ;;
 esac
