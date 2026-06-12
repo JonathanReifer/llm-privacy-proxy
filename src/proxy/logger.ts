@@ -3,12 +3,21 @@ import { join, dirname } from "path";
 
 export type LogMode = "none" | "tokenized" | "full";
 
+export interface LogFinding {
+  scannerId: string;
+  description: string;
+  severity: "block" | "warn" | "info";
+  atlasTechnique?: string;
+}
+
 export interface PromptLogEntry {
   ts: string;
   sessionId: string;
   matchCount: number;
   tokenized: string[];
   original?: string[];
+  decision?: "allow" | "ask" | "block";
+  findings?: LogFinding[];
 }
 
 export class PromptLogger {

@@ -6,21 +6,48 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")"; pwd)"
-BASHRC="$HOME/.bashrc"
+LLM_PRIVACY_DIR="${LLM_PRIVACY_DIR:-$HOME/.llm-privacy}"
+ENV_FILE="${LLM_PRIVACY_DIR}/.env.sh"
 PROXY_PORT="${LLM_PROXY_PORT:-4444}"
 PROXY_URL="http://localhost:${PROXY_PORT}"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 
+# ── Shell RC detection ─────────────────────────────────────────────────────
+
+detect_rc() {
+  case "${SHELL:-}" in
+    */zsh)  echo "$HOME/.zshrc" ;;
+    */fish) echo "$HOME/.config/fish/config.fish" ;;
+    *)      echo "$HOME/.bashrc" ;;
+  esac
+}
+RC_FILE="$(detect_rc)"
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
+# Write key to ~/.llm-privacy/.env.sh (shared env file, sourced by proxy.sh and RC)
 append_key() {
   local var="$1"
   local val="$2"
-  if grep -q "^export ${var}=" "$BASHRC" 2>/dev/null; then
-    echo "  ✓ ${var} already set — skipping"
+  mkdir -p "$LLM_PRIVACY_DIR" && chmod 700 "$LLM_PRIVACY_DIR"
+  if grep -q "^export ${var}=" "$ENV_FILE" 2>/dev/null; then
+    echo "  ✓ ${var} already in ${ENV_FILE} — skipping"
   else
-    printf '\nexport %s="%s"\n' "$var" "$val" >> "$BASHRC"
-    echo "  + ${var} added to ${BASHRC}"
+    printf 'export %s="%s"\n' "$var" "$val" >> "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    echo "  + ${var} written to ${ENV_FILE}"
+  fi
+}
+
+# Ensure the RC file sources ~/.llm-privacy/.env.sh
+wire_rc() {
+  local rc="$1"
+  local source_line='[ -f "$HOME/.llm-privacy/.env.sh" ] && source "$HOME/.llm-privacy/.env.sh"'
+  if [ -f "$rc" ] && grep -q '.llm-privacy/.env.sh' "$rc" 2>/dev/null; then
+    echo "  ✓ ${rc} already sources .env.sh"
+  else
+    printf '\n# aih-security: load LLM privacy keys\n%s\n' "$source_line" >> "$rc"
+    echo "  + Source line added to ${rc}"
   fi
 }
 
@@ -50,6 +77,15 @@ VAULT_KEY="$(openssl rand -base64 32)"
 
 append_key "LLM_PRIVACY_HMAC_KEY" "$HMAC_KEY"
 append_key "LLM_PRIVACY_VAULT_KEY" "$VAULT_KEY"
+
+# Wire up the RC file to source the env file on shell start
+echo ""
+echo "Configuring shell environment..."
+wire_rc "$RC_FILE"
+# On macOS, login shells source .bash_profile not .bashrc — wire both
+if [[ "$(uname -s)" == "Darwin" ]] && [ "$RC_FILE" != "$HOME/.bash_profile" ]; then
+  wire_rc "$HOME/.bash_profile"
+fi
 
 # ── Step 2: Install into ~/.claude (optional, default yes) ─────────────────
 
@@ -89,9 +125,9 @@ if [ -f "$OLD_VAULT" ]; then
   echo ""
   echo "Old file vault detected — migrating to SQLite..."
 
-  # Prefer key already in env; fall back to reading it from bashrc without sourcing
-  if [ -z "${LLM_PRIVACY_VAULT_KEY:-}" ]; then
-    LLM_PRIVACY_VAULT_KEY="$(grep '^export LLM_PRIVACY_VAULT_KEY=' "$BASHRC" 2>/dev/null \
+  # Prefer key already in env; fall back to reading it from .env.sh without sourcing
+  if [ -z "${LLM_PRIVACY_VAULT_KEY:-}" ] && [ -f "$ENV_FILE" ]; then
+    LLM_PRIVACY_VAULT_KEY="$(grep '^export LLM_PRIVACY_VAULT_KEY=' "$ENV_FILE" 2>/dev/null \
       | tail -1 | sed 's/^export LLM_PRIVACY_VAULT_KEY="\(.*\)"$/\1/')"
   fi
 
@@ -193,7 +229,7 @@ echo "=== Setup complete ==="
 echo ""
 echo "IMPORTANT: Load the new keys into your current shell:"
 echo ""
-echo "  source ~/.bashrc"
+echo "  source ${ENV_FILE}"
 echo ""
 echo "Verify the proxy starts correctly:"
 echo ""

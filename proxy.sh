@@ -5,29 +5,36 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")"; pwd)"
-PID_FILE="/tmp/llm-proxy.pid"
-LOG_FILE="/tmp/llm-proxy.log"
+LLM_PRIVACY_DIR="${LLM_PRIVACY_DIR:-$HOME/.llm-privacy}"
+PID_FILE="${LLM_PRIVACY_DIR}/.proxy.pid"
+LOG_FILE="${LLM_PRIVACY_DIR}/proxy.log"
 PROXY_PORT="${LLM_PROXY_PORT:-4444}"
 PROXY_URL="http://localhost:${PROXY_PORT}"
 STOP_TIMEOUT=10   # seconds before SIGKILL fallback
 
-# Load LLM_PRIVACY_* vars for non-interactive shells (bypasses bashrc interactive guard)
+# Load LLM_PRIVACY_* vars for non-interactive shells
 load_env() {
-  while IFS= read -r line; do
-    case "$line" in
-      'export LLM_PRIVACY'*) eval "$line" ;;
-    esac
-  done < "$HOME/.bashrc"
+  local env_file="${LLM_PRIVACY_DIR}/.env.sh"
+  if [ -f "$env_file" ]; then
+    # shellcheck disable=SC1090
+    source "$env_file"
+  fi
 }
 
 is_running() {
   local pid
   # Primary check: PID file
   pid="$(cat "$PID_FILE" 2>/dev/null)" && kill -0 "$pid" 2>/dev/null && return 0
-  # Fallback: if port is already bound (e.g. after /tmp cleared or proxy started
+  # Fallback: if port is already bound (e.g. after PID file lost or proxy started
   # outside proxy.sh), detect the listener and adopt it into the PID file.
-  # Use -sTCP:LISTEN to match only the server, not TCP clients on the same port.
-  pid="$(lsof -ti "tcp:${PROXY_PORT}" -sTCP:LISTEN 2>/dev/null | head -1)"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    pid="$(lsof -ti ":${PROXY_PORT}" 2>/dev/null | head -1)"
+  else
+    pid="$(lsof -ti "tcp:${PROXY_PORT}" -sTCP:LISTEN 2>/dev/null | head -1)"
+    if [ -z "$pid" ]; then
+      pid="$(ss -tlnp 2>/dev/null | grep ":${PROXY_PORT}" | grep -oP 'pid=\K[0-9]+' | head -1)"
+    fi
+  fi
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     echo "$pid" > "$PID_FILE"
     return 0
@@ -46,6 +53,7 @@ cmd_start() {
   fi
 
   load_env
+  mkdir -p "$LLM_PRIVACY_DIR"
   nohup bun "$SCRIPT_DIR/src/index.ts" >> "$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
@@ -127,8 +135,8 @@ print(f\"  Since:    {d.get('startedAt','?')}\")
 }
 
 cmd_start_claude() {
-  PID_FILE="/tmp/llm-proxy-claude.pid"
-  LOG_FILE="/tmp/llm-proxy-claude.log"
+  PID_FILE="${LLM_PRIVACY_DIR}/.proxy-claude.pid"
+  LOG_FILE="${LLM_PRIVACY_DIR}/proxy-claude.log"
   PROXY_PORT="4444"
   PROXY_URL="http://localhost:4444"
   export LLM_PROXY_PORT="4444"
@@ -138,8 +146,8 @@ cmd_start_claude() {
 }
 
 cmd_start_ollama() {
-  PID_FILE="/tmp/llm-proxy-ollama.pid"
-  LOG_FILE="/tmp/llm-proxy-ollama.log"
+  PID_FILE="${LLM_PRIVACY_DIR}/.proxy-ollama.pid"
+  LOG_FILE="${LLM_PRIVACY_DIR}/proxy-ollama.log"
   PROXY_PORT="4445"
   PROXY_URL="http://localhost:4445"
   export LLM_PROXY_PORT="4445"

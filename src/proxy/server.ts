@@ -156,16 +156,21 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
         .map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content))
         .join("\n")
     : "";
+  let requestScanFindings: Array<{ scannerId: string; description: string; severity: "block" | "warn" | "info"; atlasTechnique?: string }> = [];
+  let requestScanDecision: "allow" | "ask" | "block" = "allow";
   if (requestText) {
     const scanResult = await proxyPipeline.runPhase("request", requestText, sessionId);
+    requestScanDecision = scanResult.decision;
+    requestScanFindings = scanResult.findings.map(f => ({
+      scannerId: f.scannerId,
+      description: f.description,
+      severity: f.severity,
+      ...(f.atlasTechnique ? { atlasTechnique: f.atlasTechnique } : {}),
+    }));
     if (scanResult.decision === "block") {
       return new Response(JSON.stringify({
         error: "blocked",
-        findings: scanResult.findings.map(f => ({
-          scannerId: f.scannerId,
-          description: f.description,
-          atlasTechnique: f.atlasTechnique,
-        })),
+        findings: requestScanFindings,
       }), { status: 400, headers: { "content-type": "application/json" } });
     }
     if (scanResult.findings.length > 0) {
@@ -190,6 +195,9 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
           tokenized: (messages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)),
           ...(logger.mode === "full" && originalMessages
             ? { original: (originalMessages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)) }
+            : {}),
+          ...(requestScanDecision !== "allow" || requestScanFindings.length > 0
+            ? { decision: requestScanDecision, findings: requestScanFindings }
             : {}),
         });
       }
