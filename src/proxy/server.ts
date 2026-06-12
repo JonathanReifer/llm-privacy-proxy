@@ -2,6 +2,7 @@ import { SqliteVault, createVault } from "../vault.js";
 import { tokenizeMessages, detokenizeBody, StreamDetokenizer } from "./transform.js";
 import { PromptLogger } from "./logger.js";
 import { forwardToOllama, translateOllamaStreamToAnthropic } from "../backends/ollama.js";
+import { createDefaultProxyPipeline } from "../modules/index.js";
 import pkg from "../../package.json";
 
 const PORT = parseInt(process.env.LLM_PROXY_PORT ?? "4444", 10);
@@ -12,6 +13,7 @@ const TARGET = BACKEND === "ollama"
 
 const vault = createVault();
 const logger = new PromptLogger();
+const proxyPipeline = createDefaultProxyPipeline();
 const stats = { requests: 0, tokenized: 0, detokenized: 0, startedAt: new Date().toISOString() };
 let statsDirty = false;
 
@@ -70,6 +72,7 @@ async function handleRequest(req: Request): Promise<Response> {
       target: TARGET,
       vaultMode: vault.mode,
       vaultPath: vault.path,
+      modulesLoaded: proxyPipeline.getModuleCount(),
       ...stats,
     }), { headers: { "content-type": "application/json" } });
   }
@@ -146,6 +149,29 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
   const isStreaming = body.stream === true;
   stats.requests++;
   statsDirty = true;
+
+  // Module scan: request phase (before tokenization)
+  const requestText = Array.isArray(body.messages)
+    ? (body.messages as Array<{ content: unknown }>)
+        .map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content))
+        .join("\n")
+    : "";
+  if (requestText) {
+    const scanResult = await proxyPipeline.runPhase("request", requestText, sessionId);
+    if (scanResult.decision === "block") {
+      return new Response(JSON.stringify({
+        error: "blocked",
+        findings: scanResult.findings.map(f => ({
+          scannerId: f.scannerId,
+          description: f.description,
+          atlasTechnique: f.atlasTechnique,
+        })),
+      }), { status: 400, headers: { "content-type": "application/json" } });
+    }
+    if (scanResult.findings.length > 0) {
+      process.stderr.write(`[llm-proxy] request scan findings: ${scanResult.findings.map(f => f.description).join(", ")}\n`);
+    }
+  }
 
   // Tokenize outbound messages
   let originalMessages: unknown[] | undefined;

@@ -134,6 +134,35 @@ Add **both** entries to `~/.claude/settings.json` — the env var routes traffic
 
 Restart Claude Code. All API calls now flow through the proxy transparently — including OAuth/Claude MAX sessions.
 
+## Adding Security Modules
+
+The proxy uses a module pipeline — additional scanners register into it without modifying
+the proxy server. The `LlmProtectionProxyModule` from `llm_prompt_protection` adds
+MITRE ATLAS injection and adversarial input detection on request-phase traffic, and data
+leakage / canary detection on response-phase traffic.
+
+```typescript
+// Example: create a custom startup with the ATLAS module registered
+import { createDefaultProxyPipeline } from "./src/modules/index.js";
+import { LlmProtectionProxyModule } from "../llm_prompt_protection/src/adapters/proxy-module.js";
+
+const pipeline = createDefaultProxyPipeline();
+pipeline.register(new LlmProtectionProxyModule());
+```
+
+**Request phase** — fires before tokenization. A `block` decision returns HTTP 400 with
+`{ error: "blocked", findings: [...] }` to the client.
+
+**Response phase** — fires after detokenization, always advisory. Findings are logged;
+responses are never blocked at this phase.
+
+> **Note:** Response-phase scan findings are currently computed but not surfaced to the
+> server's response handling logic across all code paths (ISC-65, deferred). Request-phase
+> blocking is fully active.
+
+See [llm_prompt_protection/QUICKSTART.md](../llm_prompt_protection/QUICKSTART.md) for
+full installation instructions.
+
 ## Managing the Proxy
 
 All lifecycle operations go through `proxy.sh`:
