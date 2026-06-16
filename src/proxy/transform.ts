@@ -181,6 +181,11 @@ export class ToolUseBuffer {
     return this.blockIndex !== null && this.partials.length > 0;
   }
 
+  // True from startBlock() until flush() — used to suppress orphaned event headers
+  get active(): boolean {
+    return this.blockIndex !== null;
+  }
+
   async flush(): Promise<string[]> {
     if (!this.hasData()) return [];
     const rawJson = this.partials.join("");

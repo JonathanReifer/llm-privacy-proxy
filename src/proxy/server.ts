@@ -384,7 +384,17 @@ async function processSSELine(
   detok: StreamDetokenizer,
   toolUseBuf: ToolUseBuffer,
 ): Promise<string[]> {
-  if (!line.startsWith("data: ")) return [line];
+  // SSE event-header lines (e.g. "event: content_block_delta") come before the
+  // matching data line. When we are inside a tool_use block we suppress those
+  // headers here so they don't form empty SSE events that break the SDK parser.
+  if (!line.startsWith("data: ")) {
+    // Suppress "event: content_block_delta" headers while buffering tool input
+    if (line === "event: content_block_delta" && toolUseBuf.active) return [];
+    // Suppress "event: content_block_stop" when we have tool data to flush
+    // (we re-emit it after the flush in the data-line handler below)
+    if (line === "event: content_block_stop" && toolUseBuf.hasData()) return [];
+    return [line];
+  }
 
   const raw = line.slice(6);
   if (raw === "[DONE]") return [line];
@@ -423,10 +433,11 @@ async function processSSELine(
     return [line];
   }
 
-  // Content block stop — flush tool_use buffer if one is pending
+  // Content block stop — flush tool_use buffer, then re-emit the stop event
+  // (its "event: content_block_stop" header was suppressed above so we own ordering)
   if (event.type === "content_block_stop" && toolUseBuf.hasData()) {
     const flushLines = await toolUseBuf.flush();
-    return [...flushLines, line];
+    return [...flushLines, "event: content_block_stop", line];
   }
 
   return [line];
