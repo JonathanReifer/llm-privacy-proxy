@@ -51,8 +51,13 @@ export async function detokenizeBody(body: unknown, vault: IVault): Promise<unkn
 
   if (Array.isArray(resp.content)) {
     resp.content = await Promise.all((resp.content as ContentBlock[]).map(async block => {
-      if (block.type !== "text" || typeof block.text !== "string") return block;
-      return { ...block, text: await detokenizeString(block.text, vault) };
+      if (block.type === "text" && typeof block.text === "string") {
+        return { ...block, text: await detokenizeString(block.text, vault) };
+      }
+      if (block.type === "tool_use" && block.input !== null && typeof block.input === "object") {
+        return { ...block, input: await deepDetokenizeValue(block.input, vault) };
+      }
+      return block;
     }));
   }
   return resp;
@@ -71,6 +76,22 @@ export async function detokenizeString(text: string, vault: IVault): Promise<str
     if (entry) result = result.replaceAll(tokens[i], entry.original);
   }
   return result;
+}
+
+// Recursively detokenize all string leaves in any JSON value
+export async function deepDetokenizeValue(value: unknown, vault: IVault): Promise<unknown> {
+  if (typeof value === "string") return detokenizeString(value, vault);
+  if (Array.isArray(value)) {
+    return Promise.all(value.map(item => deepDetokenizeValue(item, vault)));
+  }
+  if (value !== null && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      result[k] = await deepDetokenizeValue(v, vault);
+    }
+    return result;
+  }
+  return value; // number, boolean, null — unchanged
 }
 
 // ── Streaming: buffer-aware detokenizer for SSE text_delta chunks ────────────
@@ -136,5 +157,53 @@ export class StreamDetokenizer {
     // Normal drain — partial token at end will be emitted as-is
     const out = await this.drain();
     return out + this.buf;
+  }
+}
+
+// ── Streaming: buffer tool_use input_json_delta chunks, flush on block_stop ──
+
+export class ToolUseBuffer {
+  private blockIndex: number | null = null;
+  private partials: string[] = [];
+
+  constructor(private readonly vault: IVault) {}
+
+  startBlock(index: number): void {
+    this.blockIndex = index;
+    this.partials = [];
+  }
+
+  accumulate(partial: string): void {
+    this.partials.push(partial);
+  }
+
+  hasData(): boolean {
+    return this.blockIndex !== null && this.partials.length > 0;
+  }
+
+  async flush(): Promise<string[]> {
+    if (!this.hasData()) return [];
+    const rawJson = this.partials.join("");
+    let detokenizedJson = rawJson;
+    try {
+      const parsed = JSON.parse(rawJson);
+      const detokenized = await deepDetokenizeValue(parsed, this.vault);
+      detokenizedJson = JSON.stringify(detokenized);
+    } catch {
+      // Malformed JSON (shouldn't happen per Anthropic spec) — detokenize as string
+      detokenizedJson = await detokenizeString(rawJson, this.vault);
+    }
+    const deltaEvent = {
+      type: "content_block_delta",
+      index: this.blockIndex,
+      delta: { type: "input_json_delta", partial_json: detokenizedJson },
+    };
+    this.blockIndex = null;
+    this.partials = [];
+    return [
+      "event: content_block_delta",
+      "data: " + JSON.stringify(deltaEvent),
+      "",
+    ];
   }
 }

@@ -1,5 +1,5 @@
 import { SqliteVault, createVault } from "../vault.js";
-import { tokenizeMessages, detokenizeBody, StreamDetokenizer } from "./transform.js";
+import { tokenizeMessages, detokenizeBody, StreamDetokenizer, ToolUseBuffer } from "./transform.js";
 import { PromptLogger } from "./logger.js";
 import { forwardToOllama, translateOllamaStreamToAnthropic } from "../backends/ollama.js";
 import { createDefaultProxyPipeline } from "../modules/index.js";
@@ -279,6 +279,7 @@ function handleStreamingResponse(upstream: Response): Response {
 
   (async () => {
     const detok = new StreamDetokenizer(vault_);
+    const toolUseBuf = new ToolUseBuffer(vault_);
     const reader = upstreamBody.getReader();
     let leftover = "";
     let chunksRead = 0;
@@ -302,15 +303,17 @@ function handleStreamingResponse(upstream: Response): Response {
             inTerminalPhase = true;
             terminalBuf.push(line);
           } else {
-            const out = await processSSELine(line, detok);
-            await writer.write(encoder.encode(out + "\n"));
-            if (line.startsWith("data: ")) {
-              try {
-                const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
-                if (ev.type === "content_block_delta" && typeof ev.index === "number") {
-                  lastContentIndex = ev.index;
-                }
-              } catch {}
+            const outLines = await processSSELine(line, detok, toolUseBuf);
+            for (const l of outLines) {
+              await writer.write(encoder.encode(l + "\n"));
+              if (l.startsWith("data: ")) {
+                try {
+                  const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
+                  if (ev.type === "content_block_delta" && typeof ev.index === "number") {
+                    lastContentIndex = ev.index;
+                  }
+                } catch {}
+              }
             }
           }
         }
@@ -321,8 +324,18 @@ function handleStreamingResponse(upstream: Response): Response {
           inTerminalPhase = true;
           terminalBuf.push(leftover);
         } else {
-          const out = await processSSELine(leftover, detok);
-          await writer.write(encoder.encode(out + "\n"));
+          const outLines = await processSSELine(leftover, detok, toolUseBuf);
+          for (const l of outLines) {
+            await writer.write(encoder.encode(l + "\n"));
+            if (l.startsWith("data: ")) {
+              try {
+                const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
+                if (ev.type === "content_block_delta" && typeof ev.index === "number") {
+                  lastContentIndex = ev.index;
+                }
+              } catch {}
+            }
+          }
         }
       }
       const tail = await detok.finalize();
@@ -366,27 +379,57 @@ function handleStreamingResponse(upstream: Response): Response {
   });
 }
 
-async function processSSELine(line: string, detok: StreamDetokenizer): Promise<string> {
-  if (!line.startsWith("data: ")) return line;
+async function processSSELine(
+  line: string,
+  detok: StreamDetokenizer,
+  toolUseBuf: ToolUseBuffer,
+): Promise<string[]> {
+  if (!line.startsWith("data: ")) return [line];
 
   const raw = line.slice(6);
-  if (raw === "[DONE]") return line;
+  if (raw === "[DONE]") return [line];
 
   let event: Record<string, unknown>;
-  try { event = JSON.parse(raw); } catch { return line; }
+  try { event = JSON.parse(raw); } catch { return [line]; }
 
   if (
     event.type === "content_block_delta" &&
     typeof event.delta === "object" && event.delta !== null
   ) {
     const delta = event.delta as Record<string, unknown>;
+
+    // Text delta — existing behaviour unchanged
     if (delta.type === "text_delta" && typeof delta.text === "string") {
       delta.text = await detok.push(delta.text);
-      return "data: " + JSON.stringify(event);
+      return ["data: " + JSON.stringify(event)];
+    }
+
+    // Tool input delta — buffer and suppress; emitted as one detokenized chunk on block_stop
+    if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+      toolUseBuf.accumulate(delta.partial_json);
+      return [];
     }
   }
 
-  return line;
+  // Tool_use block start — initialise buffer for this block
+  if (
+    event.type === "content_block_start" &&
+    typeof event.content_block === "object" && event.content_block !== null
+  ) {
+    const cb = event.content_block as Record<string, unknown>;
+    if (cb.type === "tool_use" && typeof event.index === "number") {
+      toolUseBuf.startBlock(event.index);
+    }
+    return [line];
+  }
+
+  // Content block stop — flush tool_use buffer if one is pending
+  if (event.type === "content_block_stop" && toolUseBuf.hasData()) {
+    const flushLines = await toolUseBuf.flush();
+    return [...flushLines, line];
+  }
+
+  return [line];
 }
 
 /**
@@ -397,7 +440,6 @@ async function processSSELine(line: string, detok: StreamDetokenizer): Promise<s
  */
 export function isTerminalLine(line: string): boolean {
   if (
-    line === "event: content_block_stop" ||
     line === "event: message_delta" ||
     line === "event: message_stop"
   ) return true;
@@ -406,7 +448,6 @@ export function isTerminalLine(line: string): boolean {
     try {
       const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
       return (
-        ev.type === "content_block_stop" ||
         ev.type === "message_delta" ||
         ev.type === "message_stop"
       );
