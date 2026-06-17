@@ -309,7 +309,11 @@ function handleStreamingResponse(upstream: Response): Response {
               if (l.startsWith("data: ")) {
                 try {
                   const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
-                  if (ev.type === "content_block_delta" && typeof ev.index === "number") {
+                  if (
+                    ev.type === "content_block_delta" &&
+                    typeof ev.index === "number" &&
+                    (ev.delta as Record<string, unknown>)?.type === "text_delta"
+                  ) {
                     lastContentIndex = ev.index;
                   }
                 } catch {}
@@ -330,7 +334,11 @@ function handleStreamingResponse(upstream: Response): Response {
             if (l.startsWith("data: ")) {
               try {
                 const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
-                if (ev.type === "content_block_delta" && typeof ev.index === "number") {
+                if (
+                  ev.type === "content_block_delta" &&
+                  typeof ev.index === "number" &&
+                  (ev.delta as Record<string, unknown>)?.type === "text_delta"
+                ) {
                   lastContentIndex = ev.index;
                 }
               } catch {}
