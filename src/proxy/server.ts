@@ -10,6 +10,7 @@ const BACKEND = (process.env.PROXY_BACKEND ?? "anthropic").toLowerCase();
 const TARGET = BACKEND === "ollama"
   ? (process.env.LLM_PROXY_TARGET ?? "http://192.168.30.51:11434").replace(/\/$/, "")
   : (process.env.LLM_PROXY_TARGET ?? "https://api.anthropic.com").replace(/\/$/, "");
+const BLOCK_ENABLED = process.env.LLM_PRIVACY_BLOCK_ENABLED !== "false" && process.env.LLM_PRIVACY_BLOCK_ENABLED !== undefined;
 
 const vault = createVault();
 const logger = new PromptLogger();
@@ -167,7 +168,7 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
       severity: f.severity,
       ...(f.atlasTechnique ? { atlasTechnique: f.atlasTechnique } : {}),
     }));
-    if (scanResult.decision === "block") {
+    if (BLOCK_ENABLED && scanResult.decision === "block") {
       return new Response(JSON.stringify({
         error: "blocked",
         findings: requestScanFindings,

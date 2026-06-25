@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-06-25
+
+### Added
+
+- **`LLM_PRIVACY_BLOCK_ENABLED` env var**: set to `false` (or leave unset) to run in monitor-only mode — patterns are still detected and logged, tokenization still occurs, but the proxy never returns HTTP 400. Set to `true` to re-enable hard blocking. Default is now **disabled** (was previously always enabled with no override). Addresses cases where detection false-positives were causing API errors in active sessions.
+
 ### Fixed
 
 - **`proxy.sh is_running` blind spot**: if the proxy was started outside `proxy.sh` (or `/tmp` was cleared), `is_running()` returned false even though the port was bound — causing `start` to attempt a second instance and `status`/`stop` to report the proxy as stopped. Fixed with an `lsof -ti tcp:PORT -sTCP:LISTEN` fallback that adopts the listening process into the PID file. `-sTCP:LISTEN` is required to avoid matching TCP client connections on the same port (e.g. Claude Code's own requests to the proxy).
@@ -100,7 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upstream error recovery: 502 response on fetch failure, passthrough on non-200 upstream responses
 - BSD 2-Clause license
 
-[Unreleased]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/JonathanReifer/llm-privacy-proxy/compare/v0.1.0...v0.2.0
