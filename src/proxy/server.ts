@@ -287,7 +287,7 @@ function handleStreamingResponse(upstream: Response): Response {
     let streamDone = false;
     const terminalBuf: string[] = [];
     let inTerminalPhase = false;
-    let lastContentIndex = 0;
+    let lastContentIndex: number | null = null;
 
     try {
       while (true) {
@@ -351,7 +351,7 @@ function handleStreamingResponse(upstream: Response): Response {
       if (inTerminalPhase) {
         // Inject tail as a proper SSE event BEFORE the terminal events so the SDK
         // sees it before message_stop and doesn't discard it.
-        if (tail) {
+        if (tail && lastContentIndex !== null) {
           const syntheticEvent = {
             type: "content_block_delta",
             index: lastContentIndex,

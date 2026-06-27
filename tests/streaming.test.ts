@@ -78,7 +78,7 @@ async function simulateStream(sseLines: string[]): Promise<string[]> {
 
   const terminalBuf: string[] = [];
   let inTerminalPhase = false;
-  let lastContentIndex = 0;
+  let lastContentIndex: number | null = null;
 
   for (const line of sseLines) {
     if (inTerminalPhase || isTerminalLine(line)) {
@@ -100,7 +100,11 @@ async function simulateStream(sseLines: string[]): Promise<string[]> {
               out = "data: " + JSON.stringify(ev);
             }
           }
-          if (ev.type === "content_block_delta" && typeof ev.index === "number") {
+          if (
+            ev.type === "content_block_delta" &&
+            typeof ev.index === "number" &&
+            (ev.delta as Record<string, unknown>)?.type === "text_delta"
+          ) {
             lastContentIndex = ev.index as number;
           }
         } catch {}
@@ -111,7 +115,7 @@ async function simulateStream(sseLines: string[]): Promise<string[]> {
 
   const tail = await detok.finalize();
   if (inTerminalPhase) {
-    if (tail) {
+    if (tail && lastContentIndex !== null) {
       const syntheticEvent = {
         type: "content_block_delta",
         index: lastContentIndex,
@@ -302,6 +306,40 @@ describe("SSE streaming tail — edge cases", () => {
     expect(text).toBe("abc");
     // content_block_stop must still be present
     expect(output.some(l => l === "event: content_block_stop")).toBe(true);
+  });
+
+  it("does not inject synthetic text_delta into tool_use-only stream (lastContentIndex poisoning fix)", async () => {
+    // Regression: tool-use-only responses have no text content block. The old code
+    // initialised lastContentIndex=0 and injected a text_delta onto index 0 (a
+    // tool_use block), causing the SDK to throw "Content block is not a text block".
+    const stream = [
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"bash","input":{}}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"cmd\\":\\"ls\\"}"}}',
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":0}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ];
+    const output = await simulateStream(stream);
+    // No synthetic text_delta should be injected (no text content block existed)
+    const syntheticTextDelta = output.find(l => {
+      if (!l.startsWith("data: ")) return false;
+      try {
+        const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
+        if (ev.type !== "content_block_delta") return false;
+        return (ev.delta as Record<string, unknown>)?.type === "text_delta";
+      } catch { return false; }
+    });
+    expect(syntheticTextDelta).toBeUndefined();
+    // Terminal events must still be present
+    expect(output.some(l => l === "event: content_block_stop")).toBe(true);
+    expect(output.some(l => l === "event: message_stop")).toBe(true);
   });
 
   it("correctly buffers event: header line when terminal phase starts mid-batch", async () => {
