@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-01
+
+### Fixed
+
+- **Regression: trailing 2-3 chars (up to 15 for a split vault token) clipped from streamed replies.** `aaaa8e3`/`41cfb69`/`d5e972b` (tool_use input detokenization, 2026-06-16) removed `content_block_stop` from `isTerminalLine()` so a pending `ToolUseBuffer` could flush before a block closes. That silently broke tail injection for plain-text replies: the text block's `content_block_stop` was no longer buffered as terminal, so it reached the client immediately, closing the block — while the detokenizer's held-back tail was only injected later, right before `message_delta`/`message_stop`, by which point the SDK had already finalized that content block and dropped the late delta. Symptom matched exactly: intermittent (only when `drain()` had something held back at stream end), last 2-3 characters missing.
+  - Fix: tail injection is no longer tied to the generic terminal-event buffer. `processSSELine()` now injects the synthetic `content_block_delta` for the held-back tail at the specific `content_block_stop` whose index matches the block that received `text_delta`s (tracked via a new exported `StreamState`/`newStreamState()`), regardless of how many further blocks (e.g. `tool_use`) follow. `isTerminalLine()` is unchanged — still only `message_delta`/`message_stop` — so `tool_use` blocks interleaved after the text block still stream and detokenize correctly. An end-of-stream fallback (gated on `!tailInjected`) is kept for streams that never emit a matching `content_block_stop`.
+  - Exported `processSSELine` and `newStreamState` from `src/proxy/server.ts` so `tests/streaming.test.ts` now drives the real production functions instead of a hand-rolled duplicate of the streaming loop — the duplicate is why the regression shipped without a failing test.
+
 ## [0.3.3] - 2026-06-25
 
 ### Added

@@ -2,26 +2,34 @@
  * Streaming SSE integration tests
  *
  * These tests verify that the handleStreamingResponse SSE tail-injection fix
- * works correctly. They simulate the streaming state machine directly (without
- * an HTTP server) to check that:
+ * works correctly. They drive the real isTerminalLine()/processSSELine()
+ * exports from server.ts through the same loop shape handleStreamingResponse
+ * uses (without an HTTP server) to check that:
  *
- *   1. isTerminalLine() correctly identifies terminal SSE event lines
+ *   1. isTerminalLine() correctly identifies terminal SSE event lines —
+ *      message_delta/message_stop only. content_block_stop is NOT terminal:
+ *      a response can have multiple content blocks (text, tool_use, ...), so
+ *      a block closing doesn't mean the stream is done.
  *   2. The held-back tail from finalize() is injected as a proper
- *      content_block_delta SSE event BEFORE content_block_stop/message_stop
+ *      content_block_delta SSE event BEFORE the text block's own
+ *      content_block_stop (not deferred to end-of-stream, which is too late —
+ *      by then the SDK has already closed that content block).
  *   3. The "3 chars" assumption is correct for plain text, but up to 15 chars
- *      can be held back when a privacy token is split at the stream boundary
+ *      can be held back when a privacy token is split at the stream boundary.
+ *   4. tool_use content blocks interleaved with a text block still get their
+ *      input_json_delta detokenized and flushed in order.
  */
 
 import { describe, it, expect } from "bun:test";
-import { isTerminalLine } from "../src/proxy/server.js";
-import { StreamDetokenizer } from "../src/proxy/transform.js";
+import { isTerminalLine, processSSELine, newStreamState } from "../src/proxy/server.js";
+import { StreamDetokenizer, ToolUseBuffer } from "../src/proxy/transform.js";
 import { MemoryVault } from "../src/vault.js";
 
 // ── isTerminalLine unit tests ────────────────────────────────────────────────
 
 describe("isTerminalLine", () => {
-  it("detects event: content_block_stop", () => {
-    expect(isTerminalLine("event: content_block_stop")).toBe(true);
+  it("does NOT treat event: content_block_stop as terminal (a block can close mid-stream, e.g. before a tool_use block)", () => {
+    expect(isTerminalLine("event: content_block_stop")).toBe(false);
   });
 
   it("detects event: message_delta", () => {
@@ -32,8 +40,8 @@ describe("isTerminalLine", () => {
     expect(isTerminalLine("event: message_stop")).toBe(true);
   });
 
-  it("detects data: content_block_stop (fallback)", () => {
-    expect(isTerminalLine('data: {"type":"content_block_stop","index":0}')).toBe(true);
+  it("does NOT treat data: content_block_stop as terminal (fallback)", () => {
+    expect(isTerminalLine('data: {"type":"content_block_stop","index":0}')).toBe(false);
   });
 
   it("detects data: message_delta (fallback)", () => {
@@ -68,66 +76,51 @@ describe("isTerminalLine", () => {
 // ── Streaming state machine simulation ───────────────────────────────────────
 
 /**
- * Replicate the core of handleStreamingResponse's streaming loop in a
- * testable, synchronous-ish form. Returns the collected output lines.
+ * Replicate the core of handleStreamingResponse's streaming loop, calling the
+ * real isTerminalLine()/processSSELine() exports so these tests exercise the
+ * actual implementation rather than a parallel reimplementation. Returns the
+ * collected output lines.
  */
 async function simulateStream(sseLines: string[]): Promise<string[]> {
   const vault = new MemoryVault();
   const detok = new StreamDetokenizer(vault);
+  const toolUseBuf = new ToolUseBuffer(vault);
+  const state = newStreamState();
   const output: string[] = [];
 
   const terminalBuf: string[] = [];
   let inTerminalPhase = false;
-  let lastContentIndex: number | null = null;
 
   for (const line of sseLines) {
     if (inTerminalPhase || isTerminalLine(line)) {
       inTerminalPhase = true;
       terminalBuf.push(line);
     } else {
-      // processSSELine equivalent (plain text only — no vault tokens in these tests)
-      let out = line;
-      if (line.startsWith("data: ")) {
-        try {
-          const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
-          if (
-            ev.type === "content_block_delta" &&
-            typeof ev.delta === "object" && ev.delta !== null
-          ) {
-            const delta = ev.delta as Record<string, unknown>;
-            if (delta.type === "text_delta" && typeof delta.text === "string") {
-              delta.text = await detok.push(delta.text);
-              out = "data: " + JSON.stringify(ev);
-            }
-          }
-          if (
-            ev.type === "content_block_delta" &&
-            typeof ev.index === "number" &&
-            (ev.delta as Record<string, unknown>)?.type === "text_delta"
-          ) {
-            lastContentIndex = ev.index as number;
-          }
-        } catch {}
-      }
-      output.push(out);
+      const outLines = await processSSELine(line, detok, toolUseBuf, state);
+      output.push(...outLines);
     }
   }
 
-  const tail = await detok.finalize();
-  if (inTerminalPhase) {
-    if (tail && lastContentIndex !== null) {
-      const syntheticEvent = {
-        type: "content_block_delta",
-        index: lastContentIndex,
-        delta: { type: "text_delta", text: tail },
-      };
-      output.push("event: content_block_delta");
-      output.push("data: " + JSON.stringify(syntheticEvent));
-      output.push(""); // SSE event separator
+  if (!state.tailInjected) {
+    state.tailInjected = true;
+    const tail = await detok.finalize();
+    if (inTerminalPhase) {
+      if (tail) {
+        const syntheticEvent = {
+          type: "content_block_delta",
+          index: state.lastContentIndex,
+          delta: { type: "text_delta", text: tail },
+        };
+        output.push("event: content_block_delta");
+        output.push("data: " + JSON.stringify(syntheticEvent));
+        output.push(""); // SSE event separator
+      }
+    } else {
+      if (tail) output.push(tail); // fallback
     }
+  }
+  if (inTerminalPhase) {
     for (const line of terminalBuf) output.push(line);
-  } else {
-    if (tail) output.push(tail); // fallback
   }
 
   return output;
@@ -234,14 +227,20 @@ describe("SSE streaming tail injection", () => {
     expect(output[idx - 1]).toBe("event: content_block_delta");
   });
 
-  it("all terminal events are preserved in order after the synthetic delta", async () => {
+  it("content_block_stop, message_delta, and message_stop all appear in order after the synthetic delta", async () => {
     const output = await simulateStream(sseStream);
-    const firstTerminal = firstTerminalPos(output);
-    const terminalLines = output.slice(firstTerminal);
-    // Should contain all three terminal event lines
-    expect(terminalLines.some(l => l === "event: content_block_stop")).toBe(true);
-    expect(terminalLines.some(l => l === "event: message_delta")).toBe(true);
-    expect(terminalLines.some(l => l === "event: message_stop")).toBe(true);
+    const lastDelta = lastDeltaPos(output);
+    const stopIdx = output.indexOf("event: content_block_stop");
+    const msgDeltaIdx = output.indexOf("event: message_delta");
+    const msgStopIdx = output.indexOf("event: message_stop");
+    // The synthetic tail delta (the last content_block_delta) must come before
+    // content_block_stop closes the block — that's the whole fix. content_block_stop
+    // itself is not buffered as "terminal"; only message_delta/message_stop are,
+    // and they must still come after it.
+    expect(lastDelta).toBeGreaterThan(-1);
+    expect(stopIdx).toBeGreaterThan(lastDelta);
+    expect(msgDeltaIdx).toBeGreaterThan(stopIdx);
+    expect(msgStopIdx).toBeGreaterThan(msgDeltaIdx);
   });
 
   it("exactly 3 chars held back for plain text ending mid-buffer", async () => {
@@ -308,55 +307,123 @@ describe("SSE streaming tail — edge cases", () => {
     expect(output.some(l => l === "event: content_block_stop")).toBe(true);
   });
 
-  it("does not inject synthetic text_delta into tool_use-only stream (lastContentIndex poisoning fix)", async () => {
-    // Regression: tool-use-only responses have no text content block. The old code
-    // initialised lastContentIndex=0 and injected a text_delta onto index 0 (a
-    // tool_use block), causing the SDK to throw "Content block is not a text block".
-    const stream = [
-      "event: content_block_start",
-      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"bash","input":{}}}',
-      "",
-      "event: content_block_delta",
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"cmd\\":\\"ls\\"}"}}',
-      "",
-      "event: content_block_stop",
-      'data: {"type":"content_block_stop","index":0}',
-      "",
-      "event: message_stop",
-      'data: {"type":"message_stop"}',
-      "",
-    ];
-    const output = await simulateStream(stream);
-    // No synthetic text_delta should be injected (no text content block existed)
-    const syntheticTextDelta = output.find(l => {
-      if (!l.startsWith("data: ")) return false;
-      try {
-        const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
-        if (ev.type !== "content_block_delta") return false;
-        return (ev.delta as Record<string, unknown>)?.type === "text_delta";
-      } catch { return false; }
-    });
-    expect(syntheticTextDelta).toBeUndefined();
-    // Terminal events must still be present
-    expect(output.some(l => l === "event: content_block_stop")).toBe(true);
-    expect(output.some(l => l === "event: message_stop")).toBe(true);
-  });
-
-  it("correctly buffers event: header line when terminal phase starts mid-batch", async () => {
-    // Ensures the event: content_block_stop header is buffered alongside its data: line
+  it("keeps the content_block_stop header adjacent to its data line (not split across the synthetic tail)", async () => {
+    // processSSELine() suppresses the raw "event: content_block_stop" header and
+    // re-emits it itself, immediately followed by its data line, with any
+    // synthetic tail / tool_use flush lines placed BEFORE both — never between them.
     const stream = [
       "event: content_block_delta",
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"test text"}}',
       "",
-      "event: content_block_stop",  // ← this line triggers terminal phase
+      "event: content_block_stop",
       'data: {"type":"content_block_stop","index":0}',
       "",
     ];
     const output = await simulateStream(stream);
-    // Both the event: and data: lines should be in the output after the synthetic tail
-    const firstTerminal = firstTerminalPos(output);
-    expect(output[firstTerminal]).toBe("event: content_block_stop");
-    const nextLine = output[firstTerminal + 1];
-    expect(nextLine).toContain("content_block_stop");
+    const headerIdx = output.indexOf("event: content_block_stop");
+    expect(headerIdx).toBeGreaterThan(-1);
+    expect(output[headerIdx + 1]).toContain('"content_block_stop"');
+  });
+});
+
+describe("SSE streaming with tool_use blocks", () => {
+  const EMAIL = "person@example.com";
+  const TOKEN = "tok_reftest00001";
+
+  it("injects the text block's tail before its content_block_stop, then still detokenizes a later tool_use block's input", async () => {
+    const vault = new MemoryVault();
+    await vault.put({ token: TOKEN, original: EMAIL, type: "pii_email", createdAt: new Date().toISOString() });
+    const detok = new StreamDetokenizer(vault);
+    const toolUseBuf = new ToolUseBuffer(vault);
+    const state = newStreamState();
+
+    const stream = [
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi there"}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"!!"}}',
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":0}',
+      "",
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"lookup","input":{}}}',
+      "",
+      "event: content_block_delta",
+      `data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"email\\":\\"tok_ref"}}`,
+      "",
+      "event: content_block_delta",
+      `data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"test00001\\"}"}}`,
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":1}',
+      "",
+    ];
+
+    const output: string[] = [];
+    const terminalBuf: string[] = [];
+    let inTerminalPhase = false;
+    for (const line of stream) {
+      if (inTerminalPhase || isTerminalLine(line)) {
+        inTerminalPhase = true;
+        terminalBuf.push(line);
+      } else {
+        output.push(...(await processSSELine(line, detok, toolUseBuf, state)));
+      }
+    }
+    output.push(...terminalBuf);
+
+    // Text is reassembled whole, tail included, before the tool_use block ever starts.
+    expect(collectText(output)).toBe("Hi there!!");
+
+    const firstStopIdx = output.indexOf("event: content_block_stop");
+    const lastDelta = lastDeltaPos(output.slice(0, firstStopIdx));
+    expect(lastDelta).toBeGreaterThan(-1); // synthetic tail delta present before the first stop
+
+    // The tool_use input was flushed as one detokenized input_json_delta, not the raw token.
+    const flushedLine = output.find(l => l.includes("input_json_delta"));
+    expect(flushedLine).toBeDefined();
+    expect(flushedLine).toContain(EMAIL);
+    expect(flushedLine).not.toContain(TOKEN);
+
+    // Two distinct content_block_stop events present, second one after the tool_use flush.
+    const stopIndices = output.reduce<number[]>((acc, l, i) => (l === "event: content_block_stop" ? [...acc, i] : acc), []);
+    expect(stopIndices.length).toBe(2);
+    const flushIdx = output.indexOf(flushedLine!);
+    expect(flushIdx).toBeGreaterThan(stopIndices[0]);
+    expect(flushIdx).toBeLessThan(stopIndices[1]);
+  });
+
+  it("emits no bogus synthetic text tail for a tool_use-only stream with no text block", async () => {
+    const vault = new MemoryVault();
+    const detok = new StreamDetokenizer(vault);
+    const toolUseBuf = new ToolUseBuffer(vault);
+    const state = newStreamState();
+
+    const stream = [
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"lookup","input":{}}}',
+      "",
+      "event: content_block_delta",
+      `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"q\\":\\"hi\\"}"}}`,
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":0}',
+      "",
+    ];
+
+    const output = await simulateStream(stream);
+
+    expect(collectText(output)).toBe(""); // no text_delta ever occurred, so no tail to inject
+    expect(output.some(l => l.includes('"text_delta"'))).toBe(false);
+    const flushedLine = output.find(l => l.includes("input_json_delta"));
+    expect(flushedLine).toBeDefined();
+    const flushedEvent = JSON.parse(flushedLine!.slice(6)) as Record<string, unknown>;
+    const flushedDelta = flushedEvent.delta as Record<string, unknown>;
+    expect(flushedDelta.partial_json).toBe('{"q":"hi"}');
   });
 });

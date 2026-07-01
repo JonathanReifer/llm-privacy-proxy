@@ -268,6 +268,16 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
   }
 }
 
+export type StreamState = {
+  lastContentIndex: number;
+  sawTextDelta: boolean;
+  tailInjected: boolean;
+};
+
+export function newStreamState(): StreamState {
+  return { lastContentIndex: 0, sawTextDelta: false, tailInjected: false };
+}
+
 function handleStreamingResponse(upstream: Response): Response {
   const vault_ = vault;
   const upstreamBody = upstream.body;
@@ -287,7 +297,7 @@ function handleStreamingResponse(upstream: Response): Response {
     let streamDone = false;
     const terminalBuf: string[] = [];
     let inTerminalPhase = false;
-    let lastContentIndex: number | null = null;
+    const state: StreamState = newStreamState();
 
     try {
       while (true) {
@@ -304,21 +314,9 @@ function handleStreamingResponse(upstream: Response): Response {
             inTerminalPhase = true;
             terminalBuf.push(line);
           } else {
-            const outLines = await processSSELine(line, detok, toolUseBuf);
+            const outLines = await processSSELine(line, detok, toolUseBuf, state);
             for (const l of outLines) {
               await writer.write(encoder.encode(l + "\n"));
-              if (l.startsWith("data: ")) {
-                try {
-                  const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
-                  if (
-                    ev.type === "content_block_delta" &&
-                    typeof ev.index === "number" &&
-                    (ev.delta as Record<string, unknown>)?.type === "text_delta"
-                  ) {
-                    lastContentIndex = ev.index;
-                  }
-                } catch {}
-              }
             }
           }
         }
@@ -329,44 +327,39 @@ function handleStreamingResponse(upstream: Response): Response {
           inTerminalPhase = true;
           terminalBuf.push(leftover);
         } else {
-          const outLines = await processSSELine(leftover, detok, toolUseBuf);
+          const outLines = await processSSELine(leftover, detok, toolUseBuf, state);
           for (const l of outLines) {
             await writer.write(encoder.encode(l + "\n"));
-            if (l.startsWith("data: ")) {
-              try {
-                const ev = JSON.parse(l.slice(6)) as Record<string, unknown>;
-                if (
-                  ev.type === "content_block_delta" &&
-                  typeof ev.index === "number" &&
-                  (ev.delta as Record<string, unknown>)?.type === "text_delta"
-                ) {
-                  lastContentIndex = ev.index;
-                }
-              } catch {}
-            }
           }
         }
       }
-      const tail = await detok.finalize();
-      if (inTerminalPhase) {
-        // Inject tail as a proper SSE event BEFORE the terminal events so the SDK
-        // sees it before message_stop and doesn't discard it.
-        if (tail && lastContentIndex !== null) {
-          const syntheticEvent = {
-            type: "content_block_delta",
-            index: lastContentIndex,
-            delta: { type: "text_delta", text: tail },
-          };
-          await writer.write(encoder.encode("event: content_block_delta\n"));
-          await writer.write(encoder.encode("data: " + JSON.stringify(syntheticEvent) + "\n\n"));
+
+      // Fallback tail injection: only reached if no matching content_block_stop
+      // for the text block was ever seen (truncated stream, non-Anthropic
+      // backend, or a stream that ends with no content at all).
+      if (!state.tailInjected) {
+        state.tailInjected = true;
+        const tail = await detok.finalize();
+        if (inTerminalPhase) {
+          if (tail) {
+            const syntheticEvent = {
+              type: "content_block_delta",
+              index: state.lastContentIndex,
+              delta: { type: "text_delta", text: tail },
+            };
+            await writer.write(encoder.encode("event: content_block_delta\n"));
+            await writer.write(encoder.encode("data: " + JSON.stringify(syntheticEvent) + "\n\n"));
+          }
+        } else {
+          if (tail) await writer.write(encoder.encode(tail));
         }
-        // Flush all buffered terminal events in order
+      }
+
+      if (inTerminalPhase) {
+        // Flush all buffered terminal events in order (message_delta, message_stop, ...)
         for (const line of terminalBuf) {
           await writer.write(encoder.encode(line + "\n"));
         }
-      } else {
-        // Fallback: no terminal events seen (non-Anthropic stream or empty body)
-        if (tail) await writer.write(encoder.encode(tail));
       }
     } catch (err) {
       if (err == null) {
@@ -388,20 +381,22 @@ function handleStreamingResponse(upstream: Response): Response {
   });
 }
 
-async function processSSELine(
+export async function processSSELine(
   line: string,
   detok: StreamDetokenizer,
   toolUseBuf: ToolUseBuffer,
+  state: StreamState,
 ): Promise<string[]> {
   // SSE event-header lines (e.g. "event: content_block_delta") come before the
-  // matching data line. When we are inside a tool_use block we suppress those
-  // headers here so they don't form empty SSE events that break the SDK parser.
+  // matching data line. We suppress "event: content_block_stop" headers
+  // unconditionally (not just for tool_use) and re-emit them from the
+  // data-line handler below, so we can inject a synthetic tail delta or a
+  // buffered tool_use flush ahead of them in the correct order — a stop can
+  // close either kind of block, and only the data line tells us which.
   if (!line.startsWith("data: ")) {
     // Suppress "event: content_block_delta" headers while buffering tool input
     if (line === "event: content_block_delta" && toolUseBuf.active) return [];
-    // Suppress "event: content_block_stop" when we have tool data to flush
-    // (we re-emit it after the flush in the data-line handler below)
-    if (line === "event: content_block_stop" && toolUseBuf.hasData()) return [];
+    if (line === "event: content_block_stop") return [];
     return [line];
   }
 
@@ -420,6 +415,10 @@ async function processSSELine(
     // Text delta — existing behaviour unchanged
     if (delta.type === "text_delta" && typeof delta.text === "string") {
       delta.text = await detok.push(delta.text);
+      if (typeof event.index === "number") {
+        state.lastContentIndex = event.index;
+        state.sawTextDelta = true;
+      }
       return ["data: " + JSON.stringify(event)];
     }
 
@@ -442,11 +441,33 @@ async function processSSELine(
     return [line];
   }
 
-  // Content block stop — flush tool_use buffer, then re-emit the stop event
-  // (its "event: content_block_stop" header was suppressed above so we own ordering)
-  if (event.type === "content_block_stop" && toolUseBuf.hasData()) {
-    const flushLines = await toolUseBuf.flush();
-    return [...flushLines, "event: content_block_stop", line];
+  // Content block stop — its "event: content_block_stop" header was suppressed
+  // above so we own ordering. Either flush a pending tool_use buffer, or — if
+  // this stop closes the text block that's been receiving text_delta pushes —
+  // inject the detokenizer's held-back tail, then re-emit header + data line.
+  if (event.type === "content_block_stop") {
+    const preLines: string[] = [];
+    if (toolUseBuf.hasData()) {
+      preLines.push(...(await toolUseBuf.flush()));
+    } else if (
+      typeof event.index === "number" &&
+      event.index === state.lastContentIndex &&
+      state.sawTextDelta &&
+      !state.tailInjected
+    ) {
+      state.tailInjected = true;
+      const tail = await detok.finalize();
+      if (tail) {
+        preLines.push("event: content_block_delta");
+        preLines.push("data: " + JSON.stringify({
+          type: "content_block_delta",
+          index: state.lastContentIndex,
+          delta: { type: "text_delta", text: tail },
+        }));
+        preLines.push(""); // blank line terminates the SSE event per spec
+      }
+    }
+    return [...preLines, "event: content_block_stop", line];
   }
 
   return [line];
@@ -454,9 +475,13 @@ async function processSSELine(
 
 /**
  * Returns true when `line` marks the start of the terminal SSE event group —
- * i.e., content_block_stop, message_delta, or message_stop. Once any of these
- * arrives, no further content_block_delta events will follow (Anthropic spec).
- * Primary detection via `event: X` header lines; data-line JSON type as fallback.
+ * i.e., message_delta or message_stop. `content_block_stop` is deliberately
+ * NOT terminal: a response can have multiple content blocks (e.g. text
+ * followed by tool_use), so a block closing doesn't mean the stream is done.
+ * `content_block_stop` is instead handled per-block in `processSSELine()`,
+ * which injects the detokenizer's tail or flushes a tool_use buffer at the
+ * right block boundary. Primary detection via `event: X` header lines;
+ * data-line JSON type as fallback.
  */
 export function isTerminalLine(line: string): boolean {
   if (
