@@ -33,6 +33,7 @@ export class PrivacyProxyModule implements ProxyModule {
           description: "LLM response contains unreplaced privacy token",
           severity: "warn",
           atlasTechnique: "AML.T0057",
+          owaspCategory: "LLM02",
         });
       }
 
@@ -42,6 +43,7 @@ export class PrivacyProxyModule implements ProxyModule {
           description: `PII in LLM response: ${m.type.replace(/_/g, " ")}`,
           severity: "info",
           atlasTechnique: "AML.T0057",
+          owaspCategory: "LLM02",
         });
       }
 
@@ -58,6 +60,7 @@ export class PrivacyProxyModule implements ProxyModule {
       description: `Privacy pattern in request: ${m.type.replace(/_/g, " ")}`,
       severity: m.severity === "block" ? "block" as const : "warn" as const,
       atlasTechnique: "AML.T0098",
+      owaspCategory: "LLM02",
     }));
 
     return {

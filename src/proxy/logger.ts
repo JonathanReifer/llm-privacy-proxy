@@ -1,5 +1,7 @@
 import { appendFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
+import { emitLog } from "../telemetry/otel.js";
+import { lookupProject } from "../project.js";
 
 export type LogMode = "none" | "tokenized" | "full";
 
@@ -8,6 +10,7 @@ export interface LogFinding {
   description: string;
   severity: "block" | "warn" | "info";
   atlasTechnique?: string;
+  owaspCategory?: string;
 }
 
 export interface PromptLogEntry {
@@ -37,6 +40,32 @@ export class PromptLogger {
   }
 
   log(entry: PromptLogEntry): void {
+    // Fire-and-forget telemetry — independent of the LLM_PRIVACY_LOG_PROMPTS
+    // opt-in below, since telemetry never carries raw prompt content.
+    const project = lookupProject(entry.sessionId);
+    void emitLog({
+      session_id: entry.sessionId,
+      project,
+      harness: "claude-code",
+      scanner_id: "proxy/summary",
+      event_type: "prompt_scan",
+      decision: entry.decision ?? "allow",
+      severity: "info",
+    });
+    for (const f of entry.findings ?? []) {
+      void emitLog({
+        session_id: entry.sessionId,
+        project,
+        harness: "claude-code",
+        scanner_id: f.scannerId,
+        event_type: "prompt_scan",
+        decision: entry.decision,
+        severity: f.severity,
+        atlas_technique: f.atlasTechnique,
+        owasp_category: f.owaspCategory,
+      });
+    }
+
     if (this.mode === "none") return;
     appendFileSync(this.path, JSON.stringify(entry) + "\n");
   }

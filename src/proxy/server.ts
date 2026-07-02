@@ -157,7 +157,7 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
         .map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content))
         .join("\n")
     : "";
-  let requestScanFindings: Array<{ scannerId: string; description: string; severity: "block" | "warn" | "info"; atlasTechnique?: string }> = [];
+  let requestScanFindings: Array<{ scannerId: string; description: string; severity: "block" | "warn" | "info"; atlasTechnique?: string; owaspCategory?: string }> = [];
   let requestScanDecision: "allow" | "ask" | "block" = "allow";
   if (requestText) {
     const scanResult = await proxyPipeline.runPhase("request", requestText, sessionId);
@@ -167,6 +167,7 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
       description: f.description,
       severity: f.severity,
       ...(f.atlasTechnique ? { atlasTechnique: f.atlasTechnique } : {}),
+      ...(f.owaspCategory ? { owaspCategory: f.owaspCategory } : {}),
     }));
     if (BLOCK_ENABLED && scanResult.decision === "block") {
       return new Response(JSON.stringify({
@@ -188,20 +189,21 @@ async function handleMessages(req: Request, url: URL): Promise<Response> {
       if (matchCount > 0) { stats.tokenized++; statsDirty = true; }
       body.messages = messages;
 
-      if (logger.mode !== "none") {
-        logger.log({
-          ts: new Date().toISOString(),
-          sessionId,
-          matchCount,
-          tokenized: (messages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)),
-          ...(logger.mode === "full" && originalMessages
-            ? { original: (originalMessages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)) }
-            : {}),
-          ...(requestScanDecision !== "allow" || requestScanFindings.length > 0
-            ? { decision: requestScanDecision, findings: requestScanFindings }
-            : {}),
-        });
-      }
+      // Always call logger.log() — it emits telemetry unconditionally and only
+      // gates the JSONL file write internally on `mode`, since telemetry never
+      // carries raw prompt content and must fire independent of that opt-in.
+      logger.log({
+        ts: new Date().toISOString(),
+        sessionId,
+        matchCount,
+        tokenized: (messages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)),
+        ...(logger.mode === "full" && originalMessages
+          ? { original: (originalMessages as Array<{ content: unknown }>).map(m => JSON.stringify(m.content)) }
+          : {}),
+        ...(requestScanDecision !== "allow" || requestScanFindings.length > 0
+          ? { decision: requestScanDecision, findings: requestScanFindings }
+          : {}),
+      });
     } catch (err) {
       process.stderr.write(`[llm-proxy] tokenize error: ${err}\n`);
     }

@@ -6,6 +6,7 @@ export interface ScanFinding {
   description: string;
   severity: FindingSeverity;
   atlasTechnique?: string;
+  owaspCategory?: string;
   detail?: Record<string, unknown>;
 }
 
